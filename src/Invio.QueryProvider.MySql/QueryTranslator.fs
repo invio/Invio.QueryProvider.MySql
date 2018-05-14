@@ -8,6 +8,8 @@ open System.Reflection
 open Microsoft.FSharp.Reflection
 open MySql.Data.MySqlClient;
 
+open Invio.Extensions.Reflection
+open Invio.QueryProvider
 open Invio.QueryProvider.ExpressionHelper
 open Invio.QueryProvider.ExpressionMatching
 open Invio.QueryProvider.TypeHelper
@@ -15,8 +17,6 @@ open Invio.QueryProvider.MySql.QueryTranslatorUtilities
 open Invio.QueryProvider.MySql.DataReader
 
 module QueryTranslator =
-    open Invio.QueryProvider
-
     let defaultGetMySqlDBType (morP : TypeSource) : MySqlDbType DBType =
         let t =
             match morP with
@@ -207,6 +207,14 @@ module QueryTranslator =
         )
         |> Seq.exactlyOne
     )
+
+    let private nullableHasValue = (typedefof<Nullable<int>>).GetGenericTypeDefinition().GetProperty("HasValue");
+
+    let private isNullableHasValue (m : MemberInfo) =
+        m :? PropertyInfo &&
+            m.DeclaringType.GetGenericTypeDefinition() = nullableHasValue.DeclaringType &&
+            m.Name = nullableHasValue.Name
+
     /// <summary>
     /// Takes a Linq.Expression tree and produces a sql query and DataReader.ConstructionInfo to construct the resulting data.
     /// </summary>
@@ -782,15 +790,25 @@ module QueryTranslator =
                             Some (valueToQueryAndParam (getDBType (TypeSource.Value c.Value)) c.Value)
                 | MemberAccess m ->
                     if m.Expression <> null && m.Expression.NodeType = ExpressionType.Parameter then
+                        // If the expression is a MemberAccess on a Parameter (i.e. a POCO property) generate column
+                        // access SQL
                         match context.TableAlias with
                         | Some tableAlias -> Some (tableAlias @ [".`"; getColumnName(m.Member); "`"], [], [])
                         | None -> failwith "cannot access member without tablealias being genned"
                     else
                         match getLocalValue m with
+                        // If the expression is a chain of MemberAccess and Call expressions on a constant, evaluate
+                        // that in C#
                         | Some (value) ->
                             let param = valueToQueryAndParam (getDBType (TypeSource.Value value)) value
                             Some (param)
-                        | None -> failwithf "The member '%s' is not supported" m.Member.Name
+                        | None ->
+                            if isNullableHasValue m.Member then
+                                let exprSql, exprParams, exprCtor = map(m.Expression)
+                                let sql = exprSql @ [" IS NOT NULL"]
+                                Some (["("] @ sql @ [")"], exprParams, exprCtor)
+                            else
+                                None
                 | _ -> None
 
             match result with

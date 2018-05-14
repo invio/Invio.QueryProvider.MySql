@@ -146,14 +146,6 @@ namespace Invio.QueryProvider.MySql.Test {
         }
 
         [Fact(Skip = "TODO: Not Supported")]
-        public override void Where_Nullable_HasValue() {
-        }
-
-        [Fact(Skip = "TODO: Not Supported")]
-        public override void Where_Nullable_NotHasValue() {
-        }
-
-        [Fact(Skip = "TODO: Not Supported")]
         public override void Where_String_Length() {
         }
 
