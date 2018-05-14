@@ -1,13 +1,13 @@
-﻿module FSharp.MySqlQueryProvider.PreparedQuery
+﻿namespace Invio.QueryProvider.MySql
 
-open FSharp.MySqlQueryProvider.DataReader
+open Invio.QueryProvider.MySql.DataReader
 
 /// <summary>
 /// Represents a query parameter
 /// </summary>
 type PreparedParameter<'T> = {
     Name : string
-    Value : obj 
+    Value : obj
     DbType : 'T
 }
 

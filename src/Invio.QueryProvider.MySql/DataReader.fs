@@ -1,22 +1,24 @@
-﻿module FSharp.MySqlQueryProvider.DataReader
+﻿module Invio.QueryProvider.MySql.DataReader
 
 open System
 open System.Collections
 open System.Linq
 open System.Reflection
 open Microsoft.FSharp.Reflection
-open Invio.Extensions.Reflection
 
-type ReturnType = 
+open Invio.Extensions.Reflection
+open Invio.QueryProvider.TypeHelper
+
+type ReturnType =
 | Single
 | SingleOrDefault
 | Many
 
-type TypeOrLambdaConstructionInfo = 
+type TypeOrLambdaConstructionInfo =
 | Type of TypeConstructionInfo
 | Lambda of LambdaConstructionInfo
 
-and TypeOrValueOrLambdaConstructionInfo = 
+and TypeOrValueOrLambdaConstructionInfo =
 | Type of TypeConstructionInfo
 | Value of int
 | Bool of int
@@ -54,54 +56,15 @@ let createTypeConstructionInfo t constructorArgs propertySets =
         PropertySets = propertySets
     }
 
-let isValueType (t : System.Type) =
-    let ti = t.GetTypeInfo()
-    ti.IsValueType || t = typedefof<string>
-let isOption (t : System.Type) = 
-    let ti = t.GetTypeInfo()
-    ti.IsGenericType &&
-    ti.GetGenericTypeDefinition() = typedefof<Option<_>>
-let isNullable (t : System.Type) = 
-    let ti = t.GetTypeInfo()
-    ti.IsGenericType &&
-    ti.GetGenericTypeDefinition() = typedefof<Nullable<_>>
-let isEnumType (t : System.Type) =
-    let ti = t.GetTypeInfo()
-    ti.IsEnum
-
-/// <summary>
-/// Assert that a union case has exactly one field, then return its Reflection.PropertyInfo
-/// </summary>
-/// <param name="t"></param>
-let unionExactlyOneCaseOneField t =
-    let cases = FSharpType.GetUnionCases t
-    if cases |> Seq.length > 1 then
-        failwith "Multi case unions are not supported"
-    else
-        let case = cases |> Seq.exactlyOne
-        let fields = case.GetFields()
-        if fields |> Seq.length > 1 then
-            failwith "Only one field allowed on union case"
-        else
-            fields |> Seq.exactlyOne
-
-/// <summary>
-/// Gets the underlying type for fsharp types
-/// </summary>
-/// <param name="t"></param>
-let rec unwrapType (t : System.Type) =
-    if isOption t then
-        t.GetTypeInfo().GetGenericArguments() |> Seq.head |> unwrapType
-    else if isNullable t then
-        Nullable.GetUnderlyingType(t) |> unwrapType
-    else if t |> FSharpType.IsUnion then
-        (unionExactlyOneCaseOneField t).PropertyType |> unwrapType
-    else
-        t
-
 let readDateTime (value : obj) =
     let dateTime = value :?> System.DateTime
     System.DateTime.SpecifyKind(dateTime, System.DateTimeKind.Utc) :> obj
+
+let readUri (value : obj) =
+    match value with
+        | null -> null
+        | :? string as uriString -> Uri(uriString) :> obj
+        | x -> failwithf "unexpected type %s" (x.GetType().FullName)
 
 let rec readBool (value : obj) =
     match value with
@@ -114,7 +77,7 @@ let rec readBool (value : obj) =
     | :? int16 as i ->
         readBool ((sbyte i) :> obj)
     | :? sbyte as i ->
-        match i with 
+        match i with
         | 0y -> false :> obj
         | 1y -> true :> obj
         | i -> failwithf "not a bit %i" i
@@ -122,17 +85,17 @@ let rec readBool (value : obj) =
     | x -> failwithf "unexpected type %s" (x.GetType().FullName)
 
 let rec constructResult (reader : System.Data.IDataReader) (ctor : ConstructionInfo) : obj =
-    
+
     match ctor.TypeOrLambda with
-    | TypeOrLambdaConstructionInfo.Lambda lambdaCtor ->  
+    | TypeOrLambdaConstructionInfo.Lambda lambdaCtor ->
         invokeLambda reader lambdaCtor
     | TypeOrLambdaConstructionInfo.Type typeCtor ->
         constructType reader typeCtor
 
-and invokeLambda reader lambdaCtor = 
-    let paramValues = 
-        lambdaCtor.Parameters 
-        |> Seq.map(fun p -> 
+and invokeLambda reader lambdaCtor =
+    let paramValues =
+        lambdaCtor.Parameters
+        |> Seq.map(fun p ->
             match p with
             | TypeOrValueOrLambdaConstructionInfo.Type typeCtor -> constructType reader typeCtor
             | TypeOrValueOrLambdaConstructionInfo.Lambda lambdaCtor -> invokeLambda reader lambdaCtor
@@ -145,19 +108,19 @@ and invokeLambda reader lambdaCtor =
 and constructEnum reader enumCtor =
     Enum.ToObject(enumCtor.Type, (reader.GetValue enumCtor.Index))
 
-and constructType reader typeCtor = 
-    let getSingleIndex() = 
+and constructType reader typeCtor =
+    let getSingleIndex() =
         match typeCtor.ConstructorArgs |> Seq.exactlyOne with
         | Type _ -> failwith "Shouldn't be Type"
         | Lambda _ -> failwith "Shouldn't be Lambda"
         | Enum e -> e.Index
         | DateTime i | Bool i | Value i -> i
 
-    let getValue i = 
+    let getValue i =
         let typeName = reader.GetDataTypeName i
         let value = reader.GetValue i
         if typeName = "char" then
-            let str = value :?> string 
+            let str = value :?> string
             str.TrimEnd() :> obj
         else if typeName.ToLower().StartsWith("varchar") then
             if reader.IsDBNull(i) then
@@ -186,6 +149,8 @@ and constructType reader typeCtor =
         Convert.ChangeType((getValue (getSingleIndex())), t)
     else if t = typedefof<System.DateTime> then
         getValue (getSingleIndex()) |> readDateTime
+    else if t = typedefof<Uri> then
+        getValue (getSingleIndex()) |> readUri
     else if t = typedefof<bool> then
         getValue (getSingleIndex()) |> readBool
     else if ti.IsEnum then
@@ -196,7 +161,7 @@ and constructType reader typeCtor =
             null :> obj
         else
             let value =
-                match typeCtor.ConstructorArgs |> Seq.exactlyOne with 
+                match typeCtor.ConstructorArgs |> Seq.exactlyOne with
                     | Type t -> failwith "Shouldn't be Type"
                     | Lambda l -> failwith "Shouldn't be Lambda"
                     | Enum e -> constructEnum reader e
@@ -218,10 +183,10 @@ and constructType reader typeCtor =
             else
                 None :> obj
     else
-        let getCtorArgs () =  
+        let getCtorArgs () =
             typeCtor.ConstructorArgs
-            |> Seq.map(fun arg -> 
-                match arg with 
+            |> Seq.map(fun arg ->
+                match arg with
                 | Type t -> constructType reader t
                 | Lambda l -> invokeLambda reader l
                 | Enum e -> constructEnum reader e
@@ -230,7 +195,7 @@ and constructType reader typeCtor =
                 | Value i -> getValue i)
             |> Seq.toArray
 
-        let inst = 
+        let inst =
             if FSharpType.IsRecord t then
                 try
                     FSharpValue.MakeRecord(t, getCtorArgs())
@@ -238,7 +203,7 @@ and constructType reader typeCtor =
                 | ex ->
                     let wrongTypeFields =
                         FSharpType.GetRecordFields t
-                        |> Seq.mapi(fun i x -> 
+                        |> Seq.mapi(fun i x ->
                             let returnType = reader.GetFieldType i
                             let expectedType =
                                 if x.PropertyType.GetTypeInfo().IsEnum then
@@ -248,16 +213,16 @@ and constructType reader typeCtor =
                             returnType, expectedType, x)
                         |> Seq.filter(fun (rt, et, _) ->
                             rt <> et)
-                    
-                    let fieldMessages = 
-                        wrongTypeFields 
+
+                    let fieldMessages =
+                        wrongTypeFields
                         |> Seq.map(fun (rt, et, recField) ->
                             sprintf "Field \"%s\" expected type \"%s\" but was \"%s\"" recField.Name
                                                                                        et.FullName
                                                                                        rt.FullName)
                         |> String.concat "\n"
-                    let message = 
-                        "Exception initializing record, types did not match:\n" + 
+                    let message =
+                        "Exception initializing record, types did not match:\n" +
                         fieldMessages
                     let newEx = System.Exception(message, ex)
                     raise newEx
@@ -268,19 +233,19 @@ and constructType reader typeCtor =
                 create.Invoke(args)
         if typeCtor.PropertySets |> Seq.length > 0 then
             failwith "PropertySets are not implemented"
-        
+
         inst
 
 let private moreThanOneMessage = "Sequence contains more than one element"
 let private noElementsMessage = "Sequence contains no elements"
 
-let read (reader : System.Data.IDataReader) constructionInfo : obj = 
-    let constructResult () = 
+let read (reader : System.Data.IDataReader) constructionInfo : obj =
+    let constructResult () =
         constructResult reader constructionInfo
-         
+
     let returnType = constructionInfo.ReturnType
     let t = constructionInfo.Type
-    let getAll() = 
+    let getAll() =
         let listT = typedefof<System.Collections.Generic.List<_>>
         let conListT = listT.MakeGenericType([| t |])
         let conListTInfo = conListT.GetTypeInfo()
@@ -291,7 +256,7 @@ let read (reader : System.Data.IDataReader) constructionInfo : obj =
             addM.Invoke(inst, [|res|]) |> ignore
         inst
     match returnType with
-    | Many -> 
+    | Many ->
         let inst = getAll()
         match constructionInfo.PostProcess with
         | Some postProcess -> postProcess.Compile().DynamicInvoke([|inst|])
@@ -308,7 +273,7 @@ let read (reader : System.Data.IDataReader) constructionInfo : obj =
             else
                 match returnType with
                 | Single -> raise (System.InvalidOperationException noElementsMessage)
-                | SingleOrDefault -> 
+                | SingleOrDefault ->
                     if isValueType t then
                         System.Activator.CreateInstance(t)
                     else

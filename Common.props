@@ -1,0 +1,8 @@
+<Project>
+  <Import Condition="Exists('$(SolutionDir)/User.props')" Project="$(SolutionDir)/User.props" />
+  <PropertyGroup>
+    <UseProjectReferences Condition=" '$(UseProjectReferences)'=='' ">false</UseProjectReferences>
+    <UsePrereleasePackages Condition=" '$(UsePrereleasePackages)'=='' ">false</UsePrereleasePackages>
+    <QueryProviderCorePath>$(SolutionDir)../Invio.QueryProvider.Core/</QueryProviderCorePath>
+  </PropertyGroup>
+</Project>

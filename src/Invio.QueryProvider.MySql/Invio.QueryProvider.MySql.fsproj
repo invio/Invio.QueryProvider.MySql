@@ -1,0 +1,47 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <PWD Condition=" '$(PWD)'=='' ">$(CD)</PWD>
+    <SolutionDir Condition=" '$(SolutionDir)'=='' ">$(PWD)</SolutionDir>
+  </PropertyGroup>
+  <Import Condition="Exists('$(SolutionDir)/Common.props')" Project="$(SolutionDir)/Common.props" />
+  <PropertyGroup>
+    <TargetFramework>netstandard2.0</TargetFramework>
+    <DebugType>portable</DebugType>
+    <PackageId>Invio.QueryProvider.MySql</PackageId>
+    <AssemblyName>Invio.QueryProvider.MySql</AssemblyName>
+    <Description>A QueryProvider implementation for MySql.</Description>
+    <Authors>Invio Inc. &lt;developers@invioinc.com&gt;</Authors>
+    <QueryProviderVersion Condition=" '$(QueryProviderVersion)'=='' ">0.0.0</QueryProviderVersion>
+    <MySqlQueryProviderVersion Condition=" '$(QueryProviderVersion)'=='' ">0.0.0</MySqlQueryProviderVersion>
+    <VersionPrefix>$(MySqlQueryProviderVersion)</VersionPrefix>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="DataReader.fs" />
+    <Compile Include="PreparedQuery.fs" />
+    <Compile Include="QueryOperations.fs" />
+    <Compile Include="QueryTranslatorUtilities.fs" />
+    <Compile Include="QueryTranslator.fs" />
+    <Compile Include="QueryProvider.fs" />
+  </ItemGroup>
+  <ItemGroup>
+    <PackageReference Include="Invio.Extensions.Reflection" Version="1.0.8" />
+    <PackageReference Include="MySql.Data" Version="8.0.11" />
+  </ItemGroup>
+  <Choose>
+    <When Condition="'$(UseProjectReferences)'=='true'">
+      <ItemGroup>
+        <ProjectReference Include="$(QueryProviderCorePath)/src/Invio.QueryProvider.Core/Invio.QueryProvider.Core.fsproj" />
+      </ItemGroup>
+    </When>
+    <When Condition="'$(UsePrereleasePackages)'=='true'">
+      <ItemGroup>
+        <PackageReference Include="Invio.QueryProvider.Core" Version="$(QueryProviderVersion)-*" />
+      </ItemGroup>
+    </When>
+    <Otherwise>
+      <ItemGroup>
+        <PackageReference Include="Invio.QueryProvider.Core" Version="$(QueryProviderVersion)" />
+      </ItemGroup>
+    </Otherwise>
+  </Choose>
+</Project>

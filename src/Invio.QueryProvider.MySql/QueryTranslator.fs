@@ -1,43 +1,31 @@
-﻿namespace FSharp.MySqlQueryProvider
-
-open MySql.Data.MySqlClient;
-open Microsoft.FSharp.Reflection
+﻿namespace Invio.QueryProvider.MySql
 
 open System
 open System.Linq
 open System.Linq.Expressions
 open System.Reflection
-open FSharp.MySqlQueryProvider
-open FSharp.MySqlQueryProvider.Expression
-open FSharp.MySqlQueryProvider.ExpressionMatching
-open FSharp.MySqlQueryProvider.QueryTranslatorUtilities
-open FSharp.MySqlQueryProvider.DataReader
-open FSharp.MySqlQueryProvider.PreparedQuery
+
+open Microsoft.FSharp.Reflection
+open MySql.Data.MySqlClient;
+
+open Invio.QueryProvider.ExpressionHelper
+open Invio.QueryProvider.ExpressionMatching
+open Invio.QueryProvider.TypeHelper
+open Invio.QueryProvider.MySql.QueryTranslatorUtilities
+open Invio.QueryProvider.MySql.DataReader
 
 module QueryTranslator =
+    open Invio.QueryProvider
 
-    /// <summary>
-    /// The different sql dialects to translate to.
-    /// </summary>
-    type QueryDialect = 
-    | MySQL57
-
-    /// <summary>
-    /// The type of query to create.
-    /// </summary>
-    type QueryType =
-    | SelectQuery
-    | DeleteQuery
-
-    let private defaultGetMySqlDBType (morP : TypeSource) : MySqlDbType DBType =
-        let t = 
-            match morP with 
+    let defaultGetMySqlDBType (morP : TypeSource) : MySqlDbType DBType =
+        let t =
+            match morP with
             | Method m -> m.ReturnType
             | Property p -> p.PropertyType
             | TypeSource.Value v -> v.GetType()
             | TypeSource.Type t -> t
         let t = unwrapType t
-        match System.Type.GetTypeCode(t) with 
+        match System.Type.GetTypeCode(t) with
         | System.TypeCode.Boolean -> DataType MySqlDbType.Bit
         | System.TypeCode.Byte -> DataType MySqlDbType.Byte
         | System.TypeCode.Char -> DataType MySqlDbType.VarChar
@@ -54,12 +42,11 @@ module QueryTranslator =
         | System.TypeCode.UInt32 -> DataType MySqlDbType.Int32
         | System.TypeCode.UInt64 -> DataType MySqlDbType.Int64
         | System.TypeCode.Empty -> Unhandled
-        | System.TypeCode.Object -> 
-            if t = typedefof<System.Guid> then
-                DataType MySqlDbType.VarChar
-            else
-                Unhandled
-        | _t -> Unhandled
+        | System.TypeCode.Object when typedefof<Guid>.IsAssignableFrom(t) -> DataType MySqlDbType.VarChar
+        | System.TypeCode.Object when typedefof<Uri>.IsAssignableFrom(t) -> DataType MySqlDbType.VarChar
+        | System.TypeCode.Object when typedefof<Char[]>.IsAssignableFrom(t) -> DataType MySqlDbType.VarChar
+        | System.TypeCode.Object when typedefof<Byte[]>.IsAssignableFrom(t) -> DataType MySqlDbType.VarBinary
+        | _ -> Unhandled
 
     let private defaultGetTableName (t:System.Type) : string =
         t.Name
@@ -71,7 +58,7 @@ module QueryTranslator =
         if isValueType t then
             {
                 Type = t
-                ConstructorArgs = [Value selectIndex] 
+                ConstructorArgs = [Value selectIndex]
                 PropertySets = []
             }
         else
@@ -95,20 +82,28 @@ module QueryTranslator =
                 else if isOption propertyType then
                     Type {
                         Type = propertyType
-                        ConstructorArgs = [Value index] 
+                        ConstructorArgs = [Value index]
                         PropertySets = []
                     }
                 else if isValueType propertyType then
                     Value index
+                else if propertyType.IsArray && propertyType.GetElementType() = typedefof<byte> then
+                    Value index
+                else if propertyType = typedefof<Uri> then
+                    Type {
+                        Type = propertyType
+                        ConstructorArgs = [Value index]
+                        PropertySets = []
+                    }
                 else
-                        failwith "non value property type not supported"
+                    failwith "non value property type not supported"
 
             let createConstructorInfoFromProperties (fields : PropertyInfo list) =
                 let ctorArgs = fields |> Seq.mapi(fun i f ->
                     let selectIndex = (selectIndex + i)
                     createConstructorInfoForPropertyType selectIndex f.PropertyType
                 )
-                
+
                 {
                     Type = t
                     ConstructorArgs = ctorArgs
@@ -118,8 +113,14 @@ module QueryTranslator =
                 let fields = FSharpType.GetRecordFields t |> Seq.toList
 
                 createConstructorInfoFromProperties fields
+            else if t = typeof<Uri> then
+                {
+                    Type = t
+                    ConstructorArgs = [Value 0]
+                    PropertySets = []
+                }
             else
-                
+
                 let bindingFlags =
                     BindingFlags.Public ||| BindingFlags.IgnoreCase
                     |||BindingFlags.Instance ||| BindingFlags.FlattenHierarchy
@@ -132,7 +133,7 @@ module QueryTranslator =
                 createConstructorInfoFromProperties fields
 
     let private createConstructionInfoForType selectIndex (t : System.Type) returnType : ConstructionInfo =
-        let typeCtor = createTypeConstructionInfo selectIndex t 
+        let typeCtor = createTypeConstructionInfo selectIndex t
         {
             ReturnType = returnType
             Type = typeCtor.Type
@@ -141,22 +142,22 @@ module QueryTranslator =
         }
 
     //terible duplication of code between this and createTypeSelect. needs to be refactored.
-    let private createTypeSelect 
-        (getColumnName : System.Reflection.MemberInfo -> string) 
-        (tableAlias : string list) 
-        (topQuery : bool) 
+    let private createTypeSelect
+        (getColumnName : System.Reflection.MemberInfo -> string)
+        (tableAlias : string list)
+        (topQuery : bool)
         (t : System.Type) =
 
         let createTypeSelectFromProperties fields =
-            let query = 
-                fields 
-                |> List.map(fun  f -> tableAlias @ [".`"; getColumnName f; "`"]) 
+            let query =
+                fields
+                |> List.map(fun  f -> tableAlias @ [".`"; getColumnName f; "`"])
                 |> List.interpolate([[", "]])
                 |> List.reduce(@)
 
             let query = query @ [" "]
 
-            let ctor = 
+            let ctor =
                 if topQuery then
                     Some (createTypeConstructionInfo 0 t)
 //                    let typeCtor = createTypeConstructionInfo 0 t
@@ -186,14 +187,14 @@ module QueryTranslator =
                 |> List.map(fun parameter -> t.GetProperty(parameter.Name, bindingFlags))
 
             createTypeSelectFromProperties fields
-    
-    let private createQueryableCtorInfo queryable returnType = 
-        createConstructionInfoForType 0 (Queryable.TypeSystem.getElementType (queryable.GetType())) returnType
+
+    let private createQueryableCtorInfo queryable returnType =
+        createConstructionInfoForType 0 (TypeHelper.getElementType (queryable.GetType())) returnType
 
     let private groupByMethodInfo = lazy (
         typedefof<System.Linq.Enumerable>.GetTypeInfo().GetMethods()
-        |> Seq.filter(fun mi -> mi.Name = "GroupBy") 
-        |> Seq.filter(fun mi -> 
+        |> Seq.filter(fun mi -> mi.Name = "GroupBy")
+        |> Seq.filter(fun mi ->
             let args = mi.GetParameters()
             if args.Length <> 2 then
                 false
@@ -203,31 +204,28 @@ module QueryTranslator =
                 let firstEqual = (first.ParameterType.GetGenericTypeDefinition() = typedefof<System.Collections.Generic.IEnumerable<_>>)
                 let secondEqual = (second.ParameterType.GetGenericTypeDefinition() = typedefof<System.Func<_, _>>)
                 firstEqual && secondEqual
-        ) 
+        )
         |> Seq.exactlyOne
     )
     /// <summary>
     /// Takes a Linq.Expression tree and produces a sql query and DataReader.ConstructionInfo to construct the resulting data.
     /// </summary>
-    /// <param name="_queryDialect"></param>
     /// <param name="queryType"></param>
     /// <param name="getDBType">Called to determine the DbType for a TypeSource</param>
     /// <param name="getTableName">Called to determine the table name for a Type</param>
     /// <param name="getColumnName">Called to determine the column name for a Reflection.MemberInfo</param>
     /// <param name="expression">The Linq.Expression to translate</param>
-    let translate 
-        (_queryDialect : QueryDialect)
-        (queryType : QueryType)
-        (getDBType : GetDBType<MySqlDbType> option) 
-        (getTableName : GetTableName option) 
-        (getColumnName : GetColumnName option) 
-        (expression : Expression) = 
-        
-        let getDBType = 
+    let translateToStatement
+        (getDBType : GetDBType<MySqlDbType> option)
+        (getTableName : GetTableName option)
+        (getColumnName : GetColumnName option)
+        (expression : Expression) =
+
+        let getDBType =
             match getDBType with
-            | Some g -> fun morP -> 
+            | Some g -> fun morP ->
                 match g morP with
-                | Unhandled -> 
+                | Unhandled ->
                     match defaultGetMySqlDBType morP with
                     | Unhandled -> failwithf "Could not determine DataType for '%A' is not handled" morP
                     | r -> r
@@ -237,26 +235,26 @@ module QueryTranslator =
         let getColumnName =
             match getColumnName with
             | Some g -> fun t ->
-                match g t with 
+                match g t with
                 | Some r ->  r
                 | None -> defaultGetColumnName t
             | None -> defaultGetColumnName
         let getTableName =
             match getTableName with
             | Some g -> fun t ->
-                match g t with 
+                match g t with
                 | Some r ->  r
                 | None -> defaultGetTableName t
             | None -> defaultGetTableName
 
         let columnNameUnique = ref 0
 
-        let getNextParamIndex () = 
+        let getNextParamIndex () =
             columnNameUnique := (!columnNameUnique + 1)
             !columnNameUnique
 
         let createParameter value =
-            let t = 
+            let t =
                 match (getDBType (TypeSource.Value value)) with
                 | Unhandled -> failwithf "Unable to determine sql data type for type '%s'" (value.GetType().Name)
                 | DataType t -> t
@@ -264,33 +262,33 @@ module QueryTranslator =
 
         let tableAliasIndex = ref 1
 
-        let getTableAlias () = 
-            let a = 
+        let getTableAlias () =
+            let a =
                 match !tableAliasIndex with
                 | 1 -> ["T"]
                 | i -> ["T"; i.ToString()]
             tableAliasIndex := (!tableAliasIndex + 1)
             a
-        
+
         let generateManualSqlQuery (queryable : IQueryable) =
-            match queryable with 
-            | :? QueryOperations.ISqlQuery as sql ->  
-                let namedParams = 
-                    sql.Parameters |> Seq.map(fun p -> 
+            match queryable with
+            | :? QueryOperations.ISqlQuery as sql ->
+                let namedParams =
+                    sql.Parameters |> Seq.map(fun p ->
                         p.Name, lazy (createParameter p.Value)
                     ) |> Map.ofSeq
-                                
-                let query, interoplatedParams = 
+
+                let query, interoplatedParams =
                     sql.Query |>
                     Seq.fold(fun (acumQ, acumP) query ->
                         let q, p =
-                            match query with 
+                            match query with
                             | QueryOperations.S text -> text, []
-                            | QueryOperations.P value -> 
+                            | QueryOperations.P value ->
                                 let p = createParameter value
                                 p.Name, [p]
-                            | QueryOperations.NP name -> 
-                                let p = 
+                            | QueryOperations.NP name ->
+                                let p =
                                     match namedParams |> Map.tryFind name with
                                     | Some p -> p.Value
                                     | None -> failwithf "Invalid query, no such param '%s'" name
@@ -298,22 +296,22 @@ module QueryTranslator =
                                 p.Name, []
                         acumQ @ [q], acumP @ p
                     ) ([], [])
-                                
+
                 Some (query, interoplatedParams @ (namedParams |> Map.toList |> List.map(fun (_, p) -> p.Value)))
             | _ ->  None
 
-        let rec mapFun (context : Context) e : ExpressionResult * (string list * PreparedParameter<_> list * ConstructionInfo list) = 
+        let rec mapFun (context : Context) e : ExpressionResult * (string list * PreparedParameter<_> list * ConstructionInfo list) =
             let mapd = fun context e ->
                 mapd(mapFun) context e |> splitResults
             let map = fun e ->
                 mapd context e
 
-            let valueToQueryAndParam dbType value = 
+            let valueToQueryAndParam dbType value =
                 valueToQueryAndParam (getNextParamIndex()) dbType value
-            let createNull dbType = 
+            let createNull dbType =
                 createNull (getNextParamIndex()) dbType
 
-            let bin (e : BinaryExpression) (text : string) = 
+            let bin (e : BinaryExpression) (text : string) =
                 let leftSql, leftParams, leftCtor = map(e.Left)
                 let rightSql, rightParams, rightCtor = map(e.Right)
                 let parameters = leftParams @ rightParams
@@ -321,10 +319,10 @@ module QueryTranslator =
                 let sql = leftSql @ [" "; text; " "] @ rightSql
                 Some (["("] @ sql @ [")"], parameters, ctors)
 
-            let result : option<string list * PreparedParameter<_> list * ConstructionInfo list>= 
+            let result : option<string list * PreparedParameter<_> list * ConstructionInfo list>=
                 match e with
-                | Call m -> 
-                    let linqChain = 
+                | Call m ->
+                    let linqChain =
                         getOperationsAndQueryable m
 
                     match linqChain with
@@ -377,12 +375,12 @@ module QueryTranslator =
                             | HasWhereClause extend ->
                                 original @ [extend]
                             | _ -> original
-                        
+
                         let wheres = List.fold concatWheres wheres wheresLists
 
                         let sorts, ml= getMethods ["OrderBy"; "OrderByDescending"; "ThenBy"; "ThenByDescending"] ml
-                        let sorts, maxOrMin = 
-                            let m = 
+                        let sorts, maxOrMin =
+                            let m =
                                 match max,min with
                                 | Some _, Some _ -> failwith "invalid"
                                 | Some m, None -> Some(m)
@@ -409,10 +407,10 @@ module QueryTranslator =
                             failwith "'lastOrDefault' operator has no translations for MySql"
 
                         let tableAlias = (getTableAlias())
-                        let map e = 
+                        let map e =
                             mapd {TableAlias = Some tableAlias; TopQuery = false} e
 
-                        let manualSqlQuery, (manualSqlParams : PreparedParameter<MySqlDbType> list), manualSqlOverride = 
+                        let manualSqlQuery, (manualSqlParams : PreparedParameter<MySqlDbType> list), manualSqlOverride =
                             match generateManualSqlQuery queryable with
                             | Some (q, p) -> q, p, true
                             | None -> [], [], false
@@ -426,15 +424,15 @@ module QueryTranslator =
                             else
                                 Many
 
-                        let createTypeSelect t = 
+                        let createTypeSelect t =
                             let q, ctor = createTypeSelect getColumnName tableAlias context.TopQuery t
                             q, [], ctor
                         let createFullTypeSelect t =
                             let q, p, ctor = createTypeSelect t
-                            let ctor = 
+                            let ctor =
                                 match ctor with
                                 | None -> None
-                                | Some ctor -> 
+                                | Some ctor ->
                                     Some {
                                         ReturnType = (getReturnType())
                                         Type = ctor.Type
@@ -442,156 +440,151 @@ module QueryTranslator =
                                         PostProcess = None
                                     }
                             q, p, ctor
-                        let selectOrDelete, selectParameters, selectCtor =
-                            if context.TopQuery && queryType = DeleteQuery then
-                                ["DELETE " ] @ tableAlias @ [" "], [], []
-                            else
-                                let selectColumn, selectParameters, selectCtor = 
-                                    match count with
-                                    | Some _-> 
-                                        ["COUNT(*) "], [], (Some (createConstructionInfoForType 0 typedefof<int> Single))
-                                    | None -> 
-                                        if contains.IsSome || any.IsSome then
-                                            ["COUNT(1) > 0 "], [] , (Some (createConstructionInfoForType 0 typedefof<bool> Single))
-                                        else if sum.IsSome then
-                                            let sum = sum.Value
-                                            let l = getLambda(sum)
-                                            let columns, _, _ = 
-                                                match l.Body with
-                                                | MemberAccess m -> map m
-                                                | _ -> failwith "not implemented lambda body"
-                                            ["SUM("] @ columns @ [") "], [], (Some (createConstructionInfoForType 0 l.ReturnType Single))
-                                        else
-                                            let partialSelect (l : LambdaExpression) =
-                                                let t = l.ReturnType
-                                                let c = 
+                        let selectClause, selectParameters, selectCtor =
+                            let selectColumns, selectParameters, selectCtor =
+                                match count with
+                                | Some _->
+                                    ["COUNT(*) "], [], (Some (createConstructionInfoForType 0 typedefof<int> Single))
+                                | None ->
+                                    if contains.IsSome || any.IsSome then
+                                        ["COUNT(1) > 0 "], [] , (Some (createConstructionInfoForType 0 typedefof<bool> Single))
+                                    else if sum.IsSome then
+                                        let sum = sum.Value
+                                        let l = getLambda(sum)
+                                        let columns, _, _ =
+                                            match l.Body with
+                                            | MemberAccess m -> map m
+                                            | _ -> failwith "not implemented lambda body"
+                                        ["SUM("] @ columns @ [") "], [], (Some (createConstructionInfoForType 0 l.ReturnType Single))
+                                    else
+                                        let partialSelect (l : LambdaExpression) =
+                                            let t = l.ReturnType
+                                            let c =
+                                                if context.TopQuery then
+                                                    Some (createConstructionInfoForType 0 t (getReturnType()))
+                                                else
+                                                    None
+                                            let q, p, _ = (l.Body |> map)
+                                            q @ [" "], p, c
+                                        match maxOrMin with
+                                        | Some m ->
+                                            partialSelect (getLambda m)
+                                        | None ->
+                                            match select with
+                                            | Some select ->
+                                                match getLambda(select) with
+                                                | SingleSameSelect x -> createFullTypeSelect x.Type
+                                                | l ->
+                                                    match l.Body with
+                                                    | MemberAccess _ -> partialSelect l
+                                                    | Call _m  ->
+                                                        if not context.TopQuery then
+                                                            failwith "Calls are only allowed in top select"
+                                                        let rec isParameter e =
+                                                            match e with
+                                                            | Parameter _ -> true
+                                                            | MemberAccess m -> isParameter m.Expression
+                                                            | _ -> false
+
+                                                        //take arguments, map to new argument sequence
+                                                        // check if the node type is parameter, transform it then
+                                                        // select all arguments where node type is parameter
+                                                        //failwith "not implemented call"
+                                                        let selectQuery, selectParams, typeCtor =
+                                                            createTypeSelect (TypeHelper.getElementType (queryable.GetType()))
+                                                        let typeCtor =
+                                                            match typeCtor with
+                                                            | Some typeCtor -> typeCtor
+                                                            | None -> failwith "shouldnt be none"
+
+                                                        let lambdaCtor = {
+                                                            Lambda = l
+                                                            Parameters = [Type typeCtor]
+                                                        }
+
+                                                        let ctor = {
+                                                            Type = l.ReturnType
+                                                            ReturnType = getReturnType()
+                                                            TypeOrLambda = TypeOrLambdaConstructionInfo.Lambda lambdaCtor
+                                                            PostProcess = None
+                                                        }
+
+                                                        selectQuery, selectParams, Some ctor
+                                                    | _ -> failwith "not implemented lambda body"
+                                            | None ->
+                                                if not manualSqlOverride then
+                                                    createFullTypeSelect (TypeHelper.getElementType (queryable.GetType()))
+                                                else
                                                     if context.TopQuery then
-                                                        Some (createConstructionInfoForType 0 t (getReturnType()))
+                                                        [] ,[], Some(createQueryableCtorInfo queryable (getReturnType()))
                                                     else
-                                                        None
-                                                let q, p, _ = (l.Body |> map)
-                                                q @ [" "], p, c
-                                            match maxOrMin with 
-                                            | Some m ->
-                                                partialSelect (getLambda m)
-                                            | None -> 
-                                                match select with
-                                                | Some select ->
-                                                    match getLambda(select) with
-                                                    | SingleSameSelect x -> createFullTypeSelect x.Type
-                                                    | l ->
-                                                        match l.Body with
-                                                        | MemberAccess _ -> partialSelect l
-                                                        | Call _m  -> 
-                                                            if not context.TopQuery then
-                                                                failwith "Calls are only allowed in top select"
-                                                            if queryType = DeleteQuery then
-                                                                failwith "Calls are not allowed in DeleteQuery"
-                                                            let rec isParameter e = 
-                                                                match e with
-                                                                | Parameter _ -> true
-                                                                | MemberAccess m -> isParameter m.Expression
-                                                                | _ -> false
-                                                                
-                                                            //take arguments, map to new argument sequence
-                                                            // check if the node type is parameter, transform it then
-                                                            // select all arguments where node type is parameter
-                                                            //failwith "not implemented call"
-                                                            let selectQuery, selectParams, typeCtor = 
-                                                                createTypeSelect (Queryable.TypeSystem.getElementType (queryable.GetType()))
-                                                            let typeCtor = 
-                                                                match typeCtor with
-                                                                | Some typeCtor -> typeCtor
-                                                                | None -> failwith "shouldnt be none"
+                                                        [], [], None
 
-                                                            let lambdaCtor = {
-                                                                Lambda = l
-                                                                Parameters = [Type typeCtor]
-                                                            }
+                            let selectCtor =
+                                match selectCtor with
+                                | Some selectCtor ->
+                                    let constructed =
+                                        match groupBy with
+                                        | Some groupBy ->
+                                            if not context.TopQuery then
+                                                failwith "Grouping only supported on top query" //would be possible to support, not doing for now though
+                                            let selector = getLambda groupBy
 
-                                                            let ctor = {
-                                                                Type = l.ReturnType
-                                                                ReturnType = getReturnType()
-                                                                TypeOrLambda = TypeOrLambdaConstructionInfo.Lambda lambdaCtor
-                                                                PostProcess = None
-                                                            }
+                                            let sourceType = typedefof<System.Collections.Generic.IEnumerable<_>>.MakeGenericType(selectCtor.Type)
+                                            let oldArgs = groupBy.Method.GetGenericArguments()
+                                            let constructedGroupBy = groupByMethodInfo.Value.MakeGenericMethod(oldArgs |> Seq.head, oldArgs |> Seq.last)
+                                            let source = Expression.Parameter(sourceType)
+                                            let body = Expression.Call(constructedGroupBy, source, selector)
+                                            let lambda = Expression.Lambda(body, [source])
 
-                                                            selectQuery, selectParams, Some ctor
-                                                        | _ -> failwith "not implemented lambda body"
-                                                | None -> 
-                                                    if not manualSqlOverride then
-                                                        createFullTypeSelect (Queryable.TypeSystem.getElementType (queryable.GetType()))
-                                                    else
-                                                        if context.TopQuery then
-                                                            [] ,[], Some(createQueryableCtorInfo queryable (getReturnType()))
-                                                        else 
-                                                            [], [], None
+                                            { selectCtor with
+                                                PostProcess = Some lambda }
+                                        | None -> selectCtor
+                                    [constructed]
+                                | None -> []
 
-                                let selectCtor = 
-                                    match selectCtor with
-                                    | Some selectCtor ->
-                                        let constructed =
-                                            match groupBy with 
-                                            | Some groupBy ->
-                                                if not context.TopQuery then
-                                                    failwith "Grouping only supported on top query" //would be possible to support, not doing for now though
-                                                let selector = getLambda groupBy
-                                                
-                                                let sourceType = typedefof<System.Collections.Generic.IEnumerable<_>>.MakeGenericType(selectCtor.Type)
-                                                let oldArgs = groupBy.Method.GetGenericArguments()
-                                                let constructedGroupBy = groupByMethodInfo.Value.MakeGenericMethod(oldArgs |> Seq.head, oldArgs |> Seq.last)
-                                                let source = Expression.Parameter(sourceType)
-                                                let body = Expression.Call(constructedGroupBy, source, selector)
-                                                let lambda = Expression.Lambda(body, [source])
+                            let frontSelect =
+                                if not manualSqlOverride || needsSelect.Value then
+                                    ["SELECT "]
+                                else
+                                    []
 
-                                                { selectCtor with 
-                                                    PostProcess = Some lambda }
-                                            | None -> selectCtor
-                                        [constructed]
-                                    | None -> []
+                            frontSelect @ selectColumns, selectParameters, selectCtor
 
-                                let frontSelect = 
-                                    if not manualSqlOverride || needsSelect.Value then
-                                        ["SELECT "]
-                                    else 
-                                        []
-
-                                frontSelect @ selectColumn, selectParameters, selectCtor
-
-                        let from = 
+                        let from =
                             if not manualSqlOverride || needsSelect.Value then
                                 ["FROM `"; getTableName(queryable.ElementType); "` AS "; ] @ tableAlias
-                            else 
+                            else
                                 []
 
-                        let mainStatement = selectOrDelete @ from 
+                        let mainStatement = selectClause @ from
 
                         let whereClause, whereParameters, whereCtor =
-                            let fromWhere = 
+                            let fromWhere =
                                 match wheres with
                                 | [] -> None
-                                | _ -> 
+                                | _ ->
                                     let wheres, parameters, ctors =
                                         wheres |> List.rev |> List.map(fun w ->
                                             let b = getLambda(w).Body
-                                            let x = 
-                                                match b with 
+                                            let x =
+                                                match b with
                                                 | Call m when(m.Method.Name = "Contains") ->
                                                     //(PersonId IN (SELECT PersonID FROM Employee))
-                                                    match m with 
-                                                    | CallIQueryable(_m, q, rest) ->  
+                                                    match m with
+                                                    | CallIQueryable(_m, q, rest) ->
                                                         let containsVal = rest |> Seq.head
                                                         match containsVal with
-                                                        | MemberAccess a -> 
+                                                        | MemberAccess a ->
                                                             let accessQ, accessP, accessCtor = a |> map
                                                             let subQ, subP, subCtor = q |> map
                                                             Some ([accessQ @ [" IN ("] @ subQ @ [")"]], accessP @ subP, accessCtor @ subCtor)
-                                                        | _ -> 
+                                                        | _ ->
                                                             None
                                                     | _ -> None
                                                 | _ -> None
                                             match x with
-                                            | None -> 
+                                            | None ->
                                                 let q, p, c = b |> map
                                                 [q], p, c
                                             | Some x ->
@@ -602,20 +595,20 @@ module QueryTranslator =
 
                             let fromContains =
                                 match contains with
-                                | Some c -> 
+                                | Some c ->
                                     let xq, xp, xc = getLambda(select.Value).Body |> map
                                     let yq, yp, yc = c.Arguments.Item(1) |> map
                                     Some (["("] @ xq @ [" = "] @ yq @ [")"], xp @ yp, xc @ yc)
                                 | None -> None
 
-                            let total = 
+                            let total =
                                 match fromWhere, fromContains with
                                 | None, None -> None
                                 | Some w, None -> Some w
                                 | None, Some c -> Some c
                                 | Some(wq,wp,wc), Some(cq,cp,cc) -> Some(["("] @ wq @ [" AND "] @ cq @ [")"], wp @ cp, wc @ cc)
 
-                            match total with 
+                            match total with
                             | None -> [], [], []
                             | Some (q, qp, qc) -> [" WHERE ("] @ q @ [")"], qp, qc
 
@@ -623,9 +616,9 @@ module QueryTranslator =
                             match sorts with
                             | [] -> [], [], []
                             | _ ->
-                                let colSorts, parameters, ctor = 
+                                let colSorts, parameters, ctor =
                                     sorts |> List.rev |> List.map(fun s ->
-                                        let sortMethod = 
+                                        let sortMethod =
                                             match s.Method.Name with
                                             | "Min" | "OrderBy" | "ThenBy" -> "ASC"
                                             | "Max" | "OrderByDescending" | "ThenByDescending" -> "DESC"
@@ -640,14 +633,14 @@ module QueryTranslator =
 
                                 [" ORDER BY "] @ colSorts, parameters, ctor
 
-                        let limitStatement = 
+                        let limitStatement =
                             let skipCount, count =
                                 if single.IsSome || singleOrDefault.IsSome then
                                     None, Some 2
-                                else if 
+                                else if
                                     first.IsSome ||
                                     firstOrDefault.IsSome ||
-                                    max.IsSome || 
+                                    max.IsSome ||
                                     min.IsSome then
                                     None, Some 1
                                 else if take.IsSome && skip.IsSome then
@@ -691,7 +684,7 @@ module QueryTranslator =
                             let value = (m.Arguments.Item(0)  :?> ConstantExpression).Value
                             let valQ, valP, valC = valueToQueryAndParam (getDBType (TypeSource.Value value)) value
                             let search =
-                                match typeName with 
+                                match typeName with
                                 | "Contains" -> ["'%' + "] @ valQ @ [" + '%'"]
                                 | "StartsWith" -> valQ @ [" + '%'"]
                                 | "EndsWith" -> ["'%' + "] @ valQ
@@ -701,9 +694,9 @@ module QueryTranslator =
                             Some (colQ @ [" LIKE "] @ search, colP @ valP, colC @ valC)
                         | "Invoke" | "op_Dereference" ->
                             simpleInvoke m
-                        | "Some" when (isOption m.Method.ReturnType) -> 
+                        | "Some" when (isOption m.Method.ReturnType) ->
                             simpleInvoke m
-                        | "get_None" when (isOption m.Method.ReturnType) -> 
+                        | "get_None" when (isOption m.Method.ReturnType) ->
                             let t = m.Method.ReturnType.GetGenericArguments() |> Seq.head
                             Some (createNull (getDBType (TypeSource.Type t)))
                         | "Contains" ->
@@ -742,15 +735,10 @@ module QueryTranslator =
                                     Some (colQ @ [" IN ("] @ inStatement @ [")"], colP @ valPs, colC @ valCs)
                             | _ -> failwithf "Contains Method not supported for type."
                         | x ->
-                            printfn "fails %O" m.Method.Name 
-//                            if typedefof<IQueryable>.IsAssignableFrom(m.Method.ReturnType) then
-//                                failwithf "Method '%s' is not implemented." x
-//                            else
-//                                failwithf "Method '%s' is not implemented." x
                             failwithf "Method '%s' is not implemented." x
                 | Not n ->
                     let sql, parameters, ctor = map(n.Operand)
-                    Some ([" NOT "] @ sql, parameters, ctor) 
+                    Some ([" NOT "] @ sql, parameters, ctor)
                 | And e ->
                     let sqlOperator =
                         match isBinaryOperation e with
@@ -777,16 +765,14 @@ module QueryTranslator =
                 | GreaterThan e -> bin e ">"
                 | GreaterThanOrEqual e -> bin e ">="
                 | Constant c ->
-                    let queryable = 
-                        match c.Value with 
+                    let queryable =
+                        match c.Value with
                         | :? IQueryable as v -> Some v
                         | _ -> None
                     match queryable with
                     | Some queryable ->
-                        match generateManualSqlQuery queryable with 
-                        | Some (q, p) -> 
-                            if queryType = QueryType.DeleteQuery then
-                                failwith "Delete query is invalid"
+                        match generateManualSqlQuery queryable with
+                        | Some (q, p) ->
                             Some (q, p, [createQueryableCtorInfo queryable Many])
                         | None -> failwith "This should never get hit"
                     | None ->
@@ -801,7 +787,7 @@ module QueryTranslator =
                         | None -> failwith "cannot access member without tablealias being genned"
                     else
                         match getLocalValue m with
-                        | Some (value) -> 
+                        | Some (value) ->
                             let param = valueToQueryAndParam (getDBType (TypeSource.Value value)) value
                             Some (param)
                         | None -> failwithf "The member '%s' is not supported" m.Member.Name
@@ -811,7 +797,7 @@ module QueryTranslator =
             | Some r -> ExpressionResult.Skip, r
             | None -> ExpressionResult.Recurse, ([], [], [])
 
-        let results = 
+        let results =
             expression
             |> mapd(mapFun) ({TableAlias = None; TopQuery = true})
 
@@ -823,7 +809,7 @@ module QueryTranslator =
             PreparedStatement.Text = query
             FormattedText = query
             Parameters = queryParameters
-            ResultConstructionInfo = 
+            ResultConstructionInfo =
                 if resultConstructionInfo |> Seq.isEmpty then
                     None
                 else
@@ -836,7 +822,7 @@ module QueryTranslator =
     /// <param name="connection"></param>
     /// <param name="preparedStatement"></param>
     let createCommand (connection : MySql.Data.MySqlClient.MySqlConnection) (preparedStatement : PreparedStatement<MySqlDbType>) =
-        
+
         let cmd = connection.CreateCommand()
         cmd.CommandText <- preparedStatement.Text
         for param in preparedStatement.Parameters do
@@ -850,15 +836,14 @@ module QueryTranslator =
     /// <summary>
     /// Translate a Linq.Expression to an IDbCommand
     /// </summary>
-    /// <param name="queryDialect"></param>
     /// <param name="queryType"></param>
     /// <param name="getDBType"></param>
     /// <param name="getTableName"></param>
     /// <param name="getColumnName"></param>
     /// <param name="connection"></param>
     /// <param name="expression"></param>
-    let translateToCommand queryDialect queryType getDBType getTableName getColumnName connection expression =
-        let ps = translate queryDialect queryType getDBType getTableName getColumnName expression
+    let translateToCommand getDBType getTableName getColumnName connection expression =
+        let ps = translateToStatement getDBType getTableName getColumnName expression
 
         let cmd = createCommand connection ps
 

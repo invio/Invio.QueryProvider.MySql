@@ -1,15 +1,16 @@
-﻿module FSharp.MySqlQueryProvider.QueryTranslatorUtilities
-    
-open FSharp.MySqlQueryProvider.DataReader
-open FSharp.MySqlQueryProvider.PreparedQuery
-open FSharp.MySqlQueryProvider.Expression
-open FSharp.MySqlQueryProvider.ExpressionMatching
-open Invio.Extensions.Reflection
+﻿module Invio.QueryProvider.MySql.QueryTranslatorUtilities
+
 open System
 open System.Linq.Expressions
 open System.Reflection
 
 open Microsoft.FSharp.Reflection
+
+open Invio.QueryProvider.ExpressionHelper
+open Invio.QueryProvider.ExpressionMatching
+open Invio.QueryProvider.TypeHelper
+open Invio.QueryProvider.MySql.DataReader
+open Invio.Extensions.Reflection
 
 type internal IQueryable = System.Linq.IQueryable
 type internal IQueryable<'T> = System.Linq.IQueryable<'T>
@@ -21,9 +22,9 @@ module List =
     /// <param name="toInsert">List of 'T to insert between</param>
     /// <param name="list">List of 'T</param>
     let interpolate (toInsert : 'T list) (list : 'T list) : 'T list=
-        list 
-        |> List.fold(fun acum item -> 
-            match acum with 
+        list
+        |> List.fold(fun acum item ->
+            match acum with
             | [] -> [item]
             | _ -> acum @ toInsert @ [item]
         ) []
@@ -37,9 +38,9 @@ type Context = {
 }
 
 /// <summary>
-/// 
+///
 /// </summary>
-type DBType<'t>= 
+type DBType<'t>=
 | Unhandled
 | DataType of 't
 
@@ -47,7 +48,7 @@ type DBType<'t>=
 /// <summary>
 /// Wrap different sources of type.
 /// </summary>
-type TypeSource = 
+type TypeSource =
 | Method of System.Reflection.MethodInfo
 | Property of System.Reflection.PropertyInfo
 | Value of obj
@@ -98,11 +99,11 @@ let (|HasWhereClause|_|) (m : option<MethodCallExpression>) =
 /// <param name="l"></param>
 let (|SingleSameSelect|_|) (l : LambdaExpression) =
     match l.Body with
-    | :? ParameterExpression as paramAccess -> 
+    | :? ParameterExpression as paramAccess ->
         let param = (l.Parameters |> Seq.exactlyOne)
         if l.Parameters.Count = 1 && paramAccess.Type = param.Type then
             Some param
-        else 
+        else
             None
     | _ -> None
 
@@ -110,7 +111,7 @@ let (|SingleSameSelect|_|) (l : LambdaExpression) =
 /// shorthand for invoking a MethodCallExpression
 /// </summary>
 /// <param name="m"></param>
-let invoke (m : MethodCallExpression) = 
+let invoke (m : MethodCallExpression) =
     Expression.Lambda(m).Compile().DynamicInvoke()
 
 /// <summary>
@@ -126,10 +127,10 @@ let compareMethodIndexes name1 name2 (ml : MethodCallExpression list) =
 /// </summary>
 /// <param name="name">The name to match on</param>
 /// <param name="ml"></param>
-let getMethod name (ml : MethodCallExpression list) = 
+let getMethod name (ml : MethodCallExpression list) =
     let m = ml |> List.tryFind(fun m -> m.Method.Name = name)
     match m with
-    | Some m -> 
+    | Some m ->
         Some(m), (ml |> List.filter(fun ms -> ms <> m))
     | None -> None, ml
 
@@ -138,7 +139,7 @@ let getMethod name (ml : MethodCallExpression list) =
 /// </summary>
 /// <param name="names">List of nammes to match on</param>
 /// <param name="ml"></param>
-let getMethods names (ml : MethodCallExpression list) = 
+let getMethods names (ml : MethodCallExpression list) =
     let methods = ml |> List.filter(fun m -> names |> List.exists(fun n -> m.Method.Name = n))
     methods, (ml |> List.filter(fun ms -> methods |> List.forall(fun m -> m <> ms)))
 
@@ -146,7 +147,7 @@ let getMethods names (ml : MethodCallExpression list) =
 /// Take a list&lt;'a list * 'b list * 'c list&gt; and concat a, b, and c no themseleves, producing a 'a list * 'b list * 'c list
 /// </summary>
 /// <param name="source"></param>
-let splitResults source = 
+let splitResults source =
     let fst = function
         | x, _, _ -> x
     let snd = function
@@ -155,8 +156,8 @@ let splitResults source =
         | _, _, x -> x
 
     source |> List.fold(fun a b ->
-        fst(a) @ fst(b), 
-        snd(a) @ snd(b), 
+        fst(a) @ fst(b),
+        snd(a) @ snd(b),
         third(a) @ third(b)
     ) (List.empty, List.empty, List.empty)
 
@@ -164,7 +165,7 @@ let splitResults source =
 /// Assert that a union case has exactly one field, then return its Reflection.PropertyInfo
 /// </summary>
 /// <param name="t"></param>
-let unionExactlyOneCaseOneField t = 
+let unionExactlyOneCaseOneField t =
     let cases = FSharpType.GetUnionCases t
     if cases |> Seq.length > 1 then
         failwith "Multi case unions are not supported"
@@ -182,7 +183,7 @@ let unionExactlyOneCaseOneField t =
 /// <param name="columnIndex"></param>
 /// <param name="value"></param>
 /// <param name="dbType"></param>
-let createParameter columnIndex value dbType = 
+let createParameter columnIndex value dbType =
     {
         PreparedParameter.Name = "@p" + columnIndex.ToString()
         Value = value
@@ -211,14 +212,14 @@ let rec unwrapValue value =
 /// <param name="columnIndex"></param>
 /// <param name="dbType"></param>
 /// <param name="value"></param>
-let rec valueToQueryAndParam (columnIndex : int) (dbType : DBType<_>) (value : obj)= 
+let rec valueToQueryAndParam (columnIndex : int) (dbType : DBType<_>) (value : obj)=
     let value = unwrapValue value
     match dbType with
     | Unhandled -> failwithf "Unable to determine sql data type for type '%s'" (value.GetType().Name)
     | DataType t ->
         let p = (createParameter columnIndex value t)
         [p.Name], [p], List.empty<ConstructionInfo>
-        
+
 
 /// <summary>
 /// Create a DbNull parameter for a type.
@@ -227,7 +228,7 @@ let rec valueToQueryAndParam (columnIndex : int) (dbType : DBType<_>) (value : o
 /// <param name="dbType"></param>
 let createNull (columnIndex : int) (dbType : DBType<_>) =
     match dbType with
-    | Unhandled -> failwith "Shouldnt ever get to this point with this value" 
+    | Unhandled -> failwith "Shouldnt ever get to this point with this value"
     | DataType dbType ->
         let p = createParameter columnIndex System.DBNull.Value dbType
         [p.Name], [p], List.empty<ConstructionInfo>
@@ -237,15 +238,15 @@ let createNull (columnIndex : int) (dbType : DBType<_>) =
 /// </summary>
 /// <param name="e"></param>
 let getOperationsAndQueryable e : option<IQueryable * MethodCallExpression list> =
-    let rec get (e : MethodCallExpression) : option<IQueryable option * MethodCallExpression list> = 
+    let rec get (e : MethodCallExpression) : option<IQueryable option * MethodCallExpression list> =
         match e with
-        | CallIQueryable(e, q, _args) -> 
+        | CallIQueryable(e, q, _args) ->
             match q with
             | Constant c -> Some(Some(c.Value :?> IQueryable), [e])
-            | Call m -> 
+            | Call m ->
                 let r = get(m)
-                match r with 
-                | Some (q, m) -> 
+                match r with
+                | Some (q, m) ->
                     Some (q, m |> List.append([e]))
                 | None -> None
             | _ -> failwithf "not implemented nodetype '%A'" q.NodeType
@@ -255,7 +256,7 @@ let getOperationsAndQueryable e : option<IQueryable * MethodCallExpression list>
                 let e = r.Expression
                 match e with
                 | Constant _ -> Some (Some (r), [])
-                | Call m -> 
+                | Call m ->
                     get m
                 | _a -> failwith "shouldnt get here"
             else
@@ -267,22 +268,21 @@ let getOperationsAndQueryable e : option<IQueryable * MethodCallExpression list>
     | Some result ->
         Some(fst(result).Value, snd(result))
 
-open System.Reflection
 /// <summary>
 /// Take an expression for either a funciton or a member access chain and get the value.
 /// </summary>
 /// <param name="e"></param>
 let getLocalValue (e : Expression) : obj option =
 
-    let rec getChain (e : Expression) : option<obj * MemberExpression list> = 
-        match e with 
-        | MemberAccess m -> 
-            match m.Expression with 
+    let rec getChain (e : Expression) : option<obj * MemberExpression list> =
+        match e with
+        | MemberAccess m ->
+            match m.Expression with
             | Constant c ->
                 Some (c.Value, [m])
             | MemberAccess ma ->
-                match getChain ma with 
-                | Some (c, ml) -> 
+                match getChain ma with
+                | Some (c, ml) ->
                     Some (c, ml |> List.append([m]))
                 | None -> None
             | Call call -> Some (invoke call, [m])
@@ -290,8 +290,8 @@ let getLocalValue (e : Expression) : obj option =
         | _ -> None
 
     match getChain e with
-    | Some (root, accesses) -> 
-        let result = 
+    | Some (root, accesses) ->
+        let result =
             accesses
             |> List.rev
             |> List.fold(fun state item ->
