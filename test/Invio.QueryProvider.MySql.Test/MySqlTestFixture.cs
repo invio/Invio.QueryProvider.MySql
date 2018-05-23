@@ -180,7 +180,8 @@ namespace Invio.QueryProvider.MySql.Test {
                 UserID = configuration.User,
                 Password = configuration.Password,
                 Port = configuration.Port,
-                Server = configuration.Host
+                Server = configuration.Host,
+                SslMode = configuration.SslMode
             };
 
             if (defaultDatabase != null) {
