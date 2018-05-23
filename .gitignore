@@ -6,6 +6,7 @@
 *.user
 *.sln.docstates
 User.props
+appsettings.json
 
 # Xamarin Studio / monodevelop user-specific
 *.userprefs
