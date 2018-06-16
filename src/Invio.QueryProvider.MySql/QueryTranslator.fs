@@ -15,6 +15,7 @@ open Invio.QueryProvider.ExpressionMatching
 open Invio.QueryProvider.TypeHelper
 open Invio.QueryProvider.MySql.QueryTranslatorUtilities
 open Invio.QueryProvider.MySql.DataReader
+open Invio.Extensions.Reflection
 
 module QueryTranslator =
     let defaultGetMySqlDBType (morP : TypeSource) : MySqlDbType DBType =
@@ -278,7 +279,28 @@ module QueryTranslator =
             tableAliasIndex := (!tableAliasIndex + 1)
             a
 
-        let generateManualSqlQuery (queryable : IQueryable) =
+        let createTypeSelect t context =
+            let tableAlias =
+                match context.TableAlias with
+                    | Some alias -> alias
+                    | None -> getTableAlias()
+            let q, ctor = createTypeSelect getColumnName tableAlias context.TopQuery t
+            q, [], ctor
+        let createFullTypeSelect t returnType context =
+            let q, p, ctor = createTypeSelect t context
+            let ctor =
+                match ctor with
+                | None -> None
+                | Some ctor ->
+                    Some {
+                        ReturnType = returnType
+                        Type = ctor.Type
+                        TypeOrLambda = TypeOrLambdaConstructionInfo.Type ctor
+                        PostProcess = None
+                    }
+            q, p, ctor
+
+        let generateManualSqlQuery (queryable : IQueryable) (tableAlias : string list) context =
             match queryable with
             | :? QueryOperations.ISqlQuery as sql ->
                 let namedParams =
@@ -415,11 +437,14 @@ module QueryTranslator =
                             failwith "'lastOrDefault' operator has no translations for MySql"
 
                         let tableAlias = (getTableAlias())
+                        let aliasedContext =
+                            {context with TableAlias = Some tableAlias}
+
                         let map e =
-                            mapd {TableAlias = Some tableAlias; TopQuery = false} e
+                            mapd {aliasedContext with TopQuery = false} e
 
                         let manualSqlQuery, (manualSqlParams : PreparedParameter<MySqlDbType> list), manualSqlOverride =
-                            match generateManualSqlQuery queryable with
+                            match generateManualSqlQuery queryable tableAlias aliasedContext with
                             | Some (q, p) -> q, p, true
                             | None -> [], [], false
 
@@ -432,22 +457,6 @@ module QueryTranslator =
                             else
                                 Many
 
-                        let createTypeSelect t =
-                            let q, ctor = createTypeSelect getColumnName tableAlias context.TopQuery t
-                            q, [], ctor
-                        let createFullTypeSelect t =
-                            let q, p, ctor = createTypeSelect t
-                            let ctor =
-                                match ctor with
-                                | None -> None
-                                | Some ctor ->
-                                    Some {
-                                        ReturnType = (getReturnType())
-                                        Type = ctor.Type
-                                        TypeOrLambda = TypeOrLambdaConstructionInfo.Type ctor
-                                        PostProcess = None
-                                    }
-                            q, p, ctor
                         let selectClause, selectParameters, selectCtor =
                             let selectColumns, selectParameters, selectCtor =
                                 match count with
@@ -481,7 +490,7 @@ module QueryTranslator =
                                             match select with
                                             | Some select ->
                                                 match getLambda(select) with
-                                                | SingleSameSelect x -> createFullTypeSelect x.Type
+                                                | SingleSameSelect x -> createFullTypeSelect x.Type (getReturnType()) aliasedContext
                                                 | l ->
                                                     match l.Body with
                                                     | MemberAccess _ -> partialSelect l
@@ -499,7 +508,7 @@ module QueryTranslator =
                                                         // select all arguments where node type is parameter
                                                         //failwith "not implemented call"
                                                         let selectQuery, selectParams, typeCtor =
-                                                            createTypeSelect (TypeHelper.getElementType (queryable.GetType()))
+                                                            createTypeSelect (TypeHelper.getElementType (queryable.GetType())) aliasedContext
                                                         let typeCtor =
                                                             match typeCtor with
                                                             | Some typeCtor -> typeCtor
@@ -521,7 +530,7 @@ module QueryTranslator =
                                                     | _ -> failwith "not implemented lambda body"
                                             | None ->
                                                 if not manualSqlOverride then
-                                                    createFullTypeSelect (TypeHelper.getElementType (queryable.GetType()))
+                                                    createFullTypeSelect (TypeHelper.getElementType (queryable.GetType())) (getReturnType ()) aliasedContext
                                                 else
                                                     if context.TopQuery then
                                                         [] ,[], Some(createQueryableCtorInfo queryable (getReturnType()))
@@ -777,9 +786,21 @@ module QueryTranslator =
                         match c.Value with
                         | :? IQueryable as v -> Some v
                         | _ -> None
+
                     match queryable with
+                    | Some queryable when TypeExtensions.IsDerivativeOf(queryable.GetType(), typedefof<Query<_>>) ->
+                        let tableAlias = getTableAlias()
+                        let aliasedContext =
+                            {context with TableAlias = Some tableAlias};
+                        let selectColumns, selectParameters, selectCtor =
+                            createFullTypeSelect (TypeHelper.getElementType (queryable.GetType())) Many aliasedContext
+                        let from = ["FROM `"; getTableName(queryable.ElementType); "` AS "; ] @ tableAlias
+                        Some (["SELECT "] @ selectColumns @ from, selectParameters, [createQueryableCtorInfo queryable Many])
                     | Some queryable ->
-                        match generateManualSqlQuery queryable with
+                        let tableAlias = getTableAlias()
+                        let aliasedContext =
+                            {context with TableAlias = Some tableAlias};
+                        match generateManualSqlQuery queryable tableAlias aliasedContext with
                         | Some (q, p) ->
                             Some (q, p, [createQueryableCtorInfo queryable Many])
                         | None -> failwith "This should never get hit"
