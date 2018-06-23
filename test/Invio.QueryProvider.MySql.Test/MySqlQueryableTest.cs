@@ -102,7 +102,6 @@ namespace Invio.QueryProvider.MySql.Test {
 
         [Fact(Skip = "BUG: Expression in OrderBy results in invalid SQL string.")]
         public override void OrderBy_Expression() {
-            base.OrderBy_Expression();
         }
 
         [Fact(Skip = "TODO: Not Supported (Skip must be combined with Take)")]
@@ -154,6 +153,7 @@ namespace Invio.QueryProvider.MySql.Test {
             base.Where_String_IndexOf();
         }
 
+        /*
         [Fact(Skip = "BUG: String Contains results in invalid SQL.")]
         public override void Where_String_Contains() {
         }
@@ -164,7 +164,7 @@ namespace Invio.QueryProvider.MySql.Test {
 
         [Fact(Skip = "BUG: String EndsWith results in invalid SQL.")]
         public override void Where_String_EndsWith() {
-        }
+        } */
 
         public void Dispose() {
             this.connection.Dispose();

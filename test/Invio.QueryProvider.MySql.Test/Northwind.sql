@@ -198,3 +198,13 @@ create table EmployeeTerritory
   constraint FK_EmployeeTerritory_Employee foreign key (EmployeeID) references Employee(EmployeeID),
   constraint FK_EmployeeTerritory_Territory foreign key (TerritoryID) references Territory(TerritoryID)
 );
+
+create table TestModel
+(
+  Id varchar(36) not null primary key,
+  Name nchar(50) null,
+  InStock bit default 0 not null,
+  ExpirationDate datetime(3) not null,
+  LotSize int default 0 not null,
+  Price decimal(15, 4) default 0 not null
+);

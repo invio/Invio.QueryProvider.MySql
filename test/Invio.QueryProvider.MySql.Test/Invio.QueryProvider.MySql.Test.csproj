@@ -11,6 +11,7 @@
   </PropertyGroup>
   <ItemGroup>
     <PackageReference Include="Invio.Extensions.Core" Version="0.1.2" />
+    <PackageReference Include="Invio.Extensions.Linq.Async.Tests" Version="0.1.7-pre1" />
     <PackageReference Include="Invio.Extensions.Reflection" Version="1.0.9" />
     <PackageReference Include="Microsoft.Extensions.Configuration" Version="2.1.0" />
     <PackageReference Include="Microsoft.Extensions.Configuration.Binder" Version="2.1.0" />

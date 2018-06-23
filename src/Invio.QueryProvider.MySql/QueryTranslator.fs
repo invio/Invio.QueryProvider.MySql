@@ -127,7 +127,7 @@ module QueryTranslator =
                     |||BindingFlags.Instance ||| BindingFlags.FlattenHierarchy
 
                 let fields =
-                    t.GetConstructors().Single().GetParameters()
+                    t.GetConstructors().Single(fun ctor -> ctor.GetParameters().Length > 0).GetParameters()
                     |> Seq.toList
                     |> List.map(fun parameter -> t.GetProperty(parameter.Name, bindingFlags))
 
@@ -183,7 +183,7 @@ module QueryTranslator =
                 |||BindingFlags.Instance ||| BindingFlags.FlattenHierarchy
 
             let fields =
-                t.GetConstructors().Single().GetParameters()
+                t.GetConstructors().Single(fun ctor -> ctor.GetParameters().Length > 0).GetParameters()
                 |> Seq.toList
                 |> List.map(fun parameter -> t.GetProperty(parameter.Name, bindingFlags))
 
@@ -860,8 +860,9 @@ module QueryTranslator =
     /// </summary>
     /// <param name="connection"></param>
     /// <param name="preparedStatement"></param>
-    let createCommand (connection : MySql.Data.MySqlClient.MySqlConnection) (preparedStatement : PreparedStatement<MySqlDbType>) =
-
+    let createCommandFromStatement
+            (connection : MySql.Data.MySqlClient.MySqlConnection)
+            (preparedStatement : PreparedStatement<MySqlDbType>) =
         let cmd = connection.CreateCommand()
         cmd.CommandText <- preparedStatement.Text
         for param in preparedStatement.Parameters do
@@ -884,6 +885,6 @@ module QueryTranslator =
     let translateToCommand getDBType getTableName getColumnName connection expression =
         let ps = translateToStatement getDBType getTableName getColumnName expression
 
-        let cmd = createCommand connection ps
+        let cmd = createCommandFromStatement connection ps
 
         cmd, ps.ResultConstructionInfo

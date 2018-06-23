@@ -24,6 +24,7 @@
     <Compile Include="QueryProvider.fs" />
   </ItemGroup>
   <ItemGroup>
+    <PackageReference Include="Invio.Extensions.Linq.Async" Version="0.1.7-pre1" />
     <PackageReference Include="Invio.Extensions.Reflection" Version="1.0.9" />
     <PackageReference Include="MySql.Data" Version="8.0.11" />
   </ItemGroup>

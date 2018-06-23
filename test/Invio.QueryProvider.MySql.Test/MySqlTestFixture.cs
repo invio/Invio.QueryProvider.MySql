@@ -5,6 +5,7 @@ using System.Linq;
 using System.Linq.Expressions;
 using System.Text;
 using Invio.Extensions;
+using Invio.Extensions.Linq.Async.Tests;
 using Invio.Extensions.Reflection;
 using Invio.QueryProvider.Test;
 using Microsoft.Extensions.Configuration;
@@ -76,6 +77,7 @@ namespace Invio.QueryProvider.MySql.Test {
                 this.InsertData(connection, testData.EmployeeTerritories);
                 this.InsertData(connection, testData.Orders);
                 this.InsertData(connection, testData.OrderDetails);
+                this.InsertData(connection, AsyncQueryableTestBase.Items);
 
                 tx.Commit();
             }
