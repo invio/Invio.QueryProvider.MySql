@@ -341,12 +341,16 @@ module QueryTranslator =
             let createNull dbType =
                 createNull (getNextParamIndex()) dbType
 
-            let bin (e : BinaryExpression) (text : string) =
+            let bin (e : BinaryExpression) (operator : string) =
                 let leftSql, leftParams, leftCtor = map(e.Left)
                 let rightSql, rightParams, rightCtor = map(e.Right)
                 let parameters = leftParams @ rightParams
                 let ctors = leftCtor @ rightCtor
-                let sql = leftSql @ [" "; text; " "] @ rightSql
+                let sql =
+                    if e.Left.Type = typedefof<string> then
+                        leftSql @ [" COLLATE utf8_bin "; operator; " "] @ rightSql
+                    else
+                        leftSql @ [" "; operator; " "] @ rightSql
                 Some (["("] @ sql @ [")"], parameters, ctors)
 
             let result : option<string list * PreparedParameter<_> list * ConstructionInfo list>=
@@ -698,17 +702,63 @@ module QueryTranslator =
                         match m.Method.Name with
                         | "Contains" | "StartsWith" | "EndsWith" as typeName
                             when(m.Object <> null && m.Object.Type = typedefof<string>) ->
-                            let value = (m.Arguments.Item(0)  :?> ConstantExpression).Value
+                            let value = getRequiredLocalValue (m.Arguments.Item(0))
                             let valQ, valP, valC = valueToQueryAndParam (getDBType (TypeSource.Value value)) value
                             let search =
                                 match typeName with
-                                | "Contains" -> ["'%' + "] @ valQ @ [" + '%'"]
-                                | "StartsWith" -> valQ @ [" + '%'"]
-                                | "EndsWith" -> ["'%' + "] @ valQ
+                                | "Contains" -> ["CONCAT('%', "] @ valQ @ [", '%')"]
+                                | "StartsWith" -> ["CONCAT("] @ valQ @ [", '%')"]
+                                | "EndsWith" -> ["CONCAT('%', "] @ valQ @ [")"]
                                 | _ -> failwithf "not implemented %s" typeName
                             let colQ, colP, colC = map(m.Object)
 
-                            Some (colQ @ [" LIKE "] @ search, colP @ valP, colC @ valC)
+                            let comp =
+                                if (m.Arguments.Count = 2) then
+                                    (getRequiredLocalValue (m.Arguments.Item(1))) :?> StringComparison
+                                else
+                                    StringComparison.Ordinal
+                            let collation =
+                                match comp with
+                                    | StringComparison.InvariantCulture
+                                    | StringComparison.Ordinal -> "utf8_bin"
+                                    // This isn't entirely accurate. The utf8_general_ci collation ignores diacritics
+                                    // whereas c# does not. Unfortunately there is no MySql collation that behaves
+                                    // precisely like the ...IgnoreCase comparisons.
+                                    | StringComparison.InvariantCultureIgnoreCase
+                                    | StringComparison.OrdinalIgnoreCase -> "utf8_general_ci"
+                                    | _ -> failwithf "StringComparison %s not implemented" (comp.ToString())
+                            Some (colQ @ [" COLLATE "; collation; " LIKE "] @ search, colP @ valP, colC @ valC)
+                        | "Equals" when (m.Method.DeclaringType = typedefof<string>) ->
+                            let (expr, value, compIx) =
+                                if m.Object <> null then
+                                    // Instance method, assume obj.Prop.Equals(String[, StringComparison])
+                                    (m.Object, getRequiredLocalValue (m.Arguments.Item(0)), 1)
+                                else
+                                    // Static method, assume String.Equals(obj.Prop, String[, StringComparison])
+                                    (m.Arguments.Item(0), getRequiredLocalValue (m.Arguments.Item(1)), 2)
+                            let colQ, colP, colC = map(expr)
+                            let valQ, valP, valC = valueToQueryAndParam (getDBType (TypeSource.Value value)) value
+                            let comp =
+                                if (m.Arguments.Count > compIx) then
+                                    getRequiredLocalValue (m.Arguments.Item(compIx)) :?> StringComparison
+                                else
+                                    StringComparison.Ordinal
+                            let collation =
+                                match comp with
+                                    // I believe these differ only in sort order
+                                    | StringComparison.InvariantCulture
+                                    | StringComparison.Ordinal -> "utf8_bin"
+                                    // This isn't entirely accurate. The utf8_general_ci collation ignores diacritics
+                                    // whereas c# does not. Unfortunately there is no MySql collation that behaves
+                                    // precisely like the ...IgnoreCase comparisons. It's tempting to use the UPPER
+                                    // function w/ the utf8_bin collation to ignore case, but there are some unicode
+                                    // characters that are stripped out by the UPPER function, so that won't work.
+                                    | StringComparison.InvariantCultureIgnoreCase
+                                    | StringComparison.OrdinalIgnoreCase -> "utf8_general_ci"
+                                    // CurrentCulture[IgnoreCase] is not supported since there is no easy way to
+                                    // translate this into a MySql collation.
+                                    | _ -> failwithf "StringComparison %s not implemented" (comp.ToString())
+                            Some (colQ @ [" COLLATE "; collation; " = "] @ valQ, colP @ valP, colC @ valC)
                         | "Invoke" | "op_Dereference" ->
                             simpleInvoke m
                         | "Some" when (isOption m.Method.ReturnType) ->
@@ -728,6 +778,11 @@ module QueryTranslator =
                                     |> Seq.toList
 
                                 let colQ, colP, colC = map(firstArg)
+                                let colQCollated =
+                                    if firstArg.Type = typedefof<string> then
+                                        colQ @ [ " COLLATE utf8_bin " ]
+                                    else
+                                        colQ
                                 let count = queryParams.Count()
 
                                 if count = 0 then
@@ -749,7 +804,7 @@ module QueryTranslator =
                                         |> List.map (fun (_, _, c) -> c)
                                         |> List.reduce(@)
 
-                                    Some (colQ @ [" IN ("] @ inStatement @ [")"], colP @ valPs, colC @ valCs)
+                                    Some (colQCollated @ [" IN ("] @ inStatement @ [")"], colP @ valPs, colC @ valCs)
                             | _ -> failwithf "Contains Method not supported for type."
                         | x ->
                             failwithf "Method '%s' is not implemented." x

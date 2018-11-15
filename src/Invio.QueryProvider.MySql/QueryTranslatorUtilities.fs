@@ -287,6 +287,9 @@ let getLocalValue (e : Expression) : obj option =
                 | None -> None
             | Call call -> Some (invoke call, [m])
             | _ -> None
+        | Constant c ->
+            Some (c.Value, [])
+        | Call call -> Some (invoke call, [])
         | _ -> None
 
     match getChain e with
@@ -306,3 +309,8 @@ let getLocalValue (e : Expression) : obj option =
             ) root
         Some result
     | None -> None
+
+let getRequiredLocalValue (e : Expression) : obj =
+    match getLocalValue e with
+    | Some value -> value
+    | None -> failwithf "Expected %s expression to be resolvable into a concrete value." (e.GetType().Name)
