@@ -137,7 +137,7 @@ namespace Invio.QueryProvider.MySql.Test {
         public override void Select_StringLength() {
         }
 
-        [Fact(Skip = "BUG: explict casts are dopped, therefore lossy, numeric conversions do not work")]
+        [Fact(Skip = "BUG: explicit casts are dropped, therefore lossy, numeric conversions do not work")]
         public override void Where_Field_Eq_ExplicitConversion() {
         }
 
@@ -152,18 +152,6 @@ namespace Invio.QueryProvider.MySql.Test {
         [Fact(Skip = "TODO: Not Supported")]
         public override void Where_String_IndexOf() {
             base.Where_String_IndexOf();
-        }
-
-        [Fact(Skip = "BUG: String Contains results in invalid SQL.")]
-        public override void Where_String_Contains() {
-        }
-
-        [Fact(Skip = "BUG: String StartsWith results in invalid SQL.")]
-        public override void Where_String_StartsWith() {
-        }
-
-        [Fact(Skip = "BUG: String EndsWith results in invalid SQL.")]
-        public override void Where_String_EndsWith() {
         }
 
         public void Dispose() {
