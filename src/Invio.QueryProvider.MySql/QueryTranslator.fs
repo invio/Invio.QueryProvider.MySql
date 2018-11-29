@@ -1,6 +1,7 @@
 ﻿namespace Invio.QueryProvider.MySql
 
 open System
+open System.Collections.Generic
 open System.Linq
 open System.Linq.Expressions
 open System.Reflection
@@ -780,7 +781,16 @@ module QueryTranslator =
                                 let colQ, colP, colC = map(firstArg)
                                 let colQCollated =
                                     if firstArg.Type = typedefof<string> then
-                                        colQ @ [ " COLLATE utf8_bin " ]
+                                        if args.Length = 2 then
+                                            let cmp = getRequiredLocalValue args.[1] :?> IEqualityComparer<String>
+                                            if cmp = (StringComparer.InvariantCulture :> IEqualityComparer<String>) ||
+                                                cmp = (StringComparer.Ordinal :> IEqualityComparer<String>) then
+                                                colQ @ [ " COLLATE utf8_bin " ]
+                                            else if cmp = (StringComparer.InvariantCultureIgnoreCase :> IEqualityComparer<String>) ||
+                                                cmp = (StringComparer.OrdinalIgnoreCase :> IEqualityComparer<String>) then
+                                                colQ @ [ " COLLATE utf8_unicode_ci " ]
+                                            else failwith "The specified StringComparer is not supported"
+                                        else colQ @ [ " COLLATE utf8_bin " ]
                                     else
                                         colQ
                                 let count = queryParams.Count()

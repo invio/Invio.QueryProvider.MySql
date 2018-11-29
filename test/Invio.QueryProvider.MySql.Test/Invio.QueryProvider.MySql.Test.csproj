@@ -4,6 +4,7 @@
     <SolutionDir Condition=" '$(SolutionDir)'=='' ">$(PWD)</SolutionDir>
   </PropertyGroup>
   <Import Condition="Exists('$(SolutionDir)/Common.props')" Project="$(SolutionDir)/Common.props" />
+  <Import Condition="Exists('$(SolutionDir)/User.props')" Project="$(SolutionDir)/User.props" />
   <PropertyGroup>
     <TargetFramework>netcoreapp2.1</TargetFramework>
     <IsPackable>false</IsPackable>
