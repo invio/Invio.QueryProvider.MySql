@@ -721,11 +721,11 @@ module QueryTranslator =
                                 match comp with
                                     | StringComparison.InvariantCulture
                                     | StringComparison.Ordinal -> "utf8_bin"
-                                    // This isn't entirely accurate. The utf8_general_ci collation ignores diacritics
+                                    // This isn't entirely accurate. The utf8_unicode_ci collation ignores diacritics
                                     // whereas c# does not. Unfortunately there is no MySql collation that behaves
                                     // precisely like the ...IgnoreCase comparisons.
                                     | StringComparison.InvariantCultureIgnoreCase
-                                    | StringComparison.OrdinalIgnoreCase -> "utf8_general_ci"
+                                    | StringComparison.OrdinalIgnoreCase -> "utf8_unicode_ci"
                                     | _ -> failwithf "StringComparison %s not implemented" (comp.ToString())
                             Some (colQ @ [" COLLATE "; collation; " LIKE "] @ search, colP @ valP, colC @ valC)
                         | "Equals" when (m.Method.DeclaringType = typedefof<string>) ->
@@ -748,13 +748,13 @@ module QueryTranslator =
                                     // I believe these differ only in sort order
                                     | StringComparison.InvariantCulture
                                     | StringComparison.Ordinal -> "utf8_bin"
-                                    // This isn't entirely accurate. The utf8_general_ci collation ignores diacritics
+                                    // This isn't entirely accurate. The utf8_unicode_ci collation ignores diacritics
                                     // whereas c# does not. Unfortunately there is no MySql collation that behaves
                                     // precisely like the ...IgnoreCase comparisons. It's tempting to use the UPPER
                                     // function w/ the utf8_bin collation to ignore case, but there are some unicode
                                     // characters that are stripped out by the UPPER function, so that won't work.
                                     | StringComparison.InvariantCultureIgnoreCase
-                                    | StringComparison.OrdinalIgnoreCase -> "utf8_general_ci"
+                                    | StringComparison.OrdinalIgnoreCase -> "utf8_unicode_ci"
                                     // CurrentCulture[IgnoreCase] is not supported since there is no easy way to
                                     // translate this into a MySql collation.
                                     | _ -> failwithf "StringComparison %s not implemented" (comp.ToString())
