@@ -286,6 +286,13 @@ let getLocalValue (e : Expression) : obj option =
                     Some (c, ml |> List.append([m]))
                 | None -> None
             | Call call -> Some (invoke call, [m])
+            // Static properties and fields
+            | null when m.Member.MemberType = MemberTypes.Property ->
+                let prop = m.Member :?> PropertyInfo
+                Some (prop.GetValue(null), [])
+            | null when m.Member.MemberType = MemberTypes.Field ->
+                let field = m.Member :?> FieldInfo
+                Some (field.GetValue(null), [])
             | _ -> None
         | Constant c ->
             Some (c.Value, [])
