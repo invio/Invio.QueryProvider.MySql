@@ -2,10 +2,13 @@
 
 open System
 open System.Collections.Generic
+open System.ComponentModel
 open System.Linq
 open System.Linq.Expressions
 open System.Reflection
 
+open Microsoft.FSharp.Linq.RuntimeHelpers
+open Microsoft.FSharp.Quotations
 open Microsoft.FSharp.Reflection
 open MySql.Data.MySqlClient;
 
@@ -16,39 +19,48 @@ open Invio.QueryProvider.ExpressionMatching
 open Invio.QueryProvider.TypeHelper
 open Invio.QueryProvider.MySql.QueryTranslatorUtilities
 open Invio.QueryProvider.MySql.DataReader
-open Invio.Extensions.Reflection
 
 module QueryTranslator =
-    let defaultGetMySqlDBType (morP : TypeSource) : MySqlDbType DBType =
-        let t =
-            match morP with
+    open System.ComponentModel
+
+    let toLinq (expr : Expr<'a -> 'b>) =
+      let linq = LeafExpressionConverter.QuotationToExpression expr
+      let call = linq :?> MethodCallExpression
+      let lambda = call.Arguments.[0] :?> LambdaExpression
+      Expression.Lambda<Func<'a, 'b>>(lambda.Body, lambda.Parameters)
+
+    let defaultGetMySqlDBType (typeSource : TypeSource) : (MySqlDbType DBType*Type) =
+        let originType =
+            match typeSource with
             | Method m -> m.ReturnType
             | Property p -> p.PropertyType
             | TypeSource.Value v -> v.GetType()
             | TypeSource.Type t -> t
-        let t = unwrapType t
-        match System.Type.GetTypeCode(t) with
-        | System.TypeCode.Boolean -> DataType MySqlDbType.Bit
-        | System.TypeCode.Byte -> DataType MySqlDbType.Byte
-        | System.TypeCode.Char -> DataType MySqlDbType.VarChar
-        | System.TypeCode.DateTime -> DataType MySqlDbType.DateTime
-        | System.TypeCode.Decimal -> DataType MySqlDbType.Decimal
-        | System.TypeCode.Double -> DataType MySqlDbType.Double
-        | System.TypeCode.Int16 -> DataType MySqlDbType.Int16
-        | System.TypeCode.Int32 -> DataType MySqlDbType.Int32
-        | System.TypeCode.Int64 -> DataType MySqlDbType.Int64
-        | System.TypeCode.SByte -> DataType MySqlDbType.Byte
-        | System.TypeCode.Single -> DataType MySqlDbType.Float
-        | System.TypeCode.String -> DataType MySqlDbType.VarChar
-        | System.TypeCode.UInt16 -> DataType MySqlDbType.Int16
-        | System.TypeCode.UInt32 -> DataType MySqlDbType.Int32
-        | System.TypeCode.UInt64 -> DataType MySqlDbType.Int64
-        | System.TypeCode.Empty -> Unhandled
-        | System.TypeCode.Object when typedefof<Guid>.IsAssignableFrom(t) -> DataType MySqlDbType.VarChar
-        | System.TypeCode.Object when typedefof<Uri>.IsAssignableFrom(t) -> DataType MySqlDbType.VarChar
-        | System.TypeCode.Object when typedefof<Char[]>.IsAssignableFrom(t) -> DataType MySqlDbType.VarChar
-        | System.TypeCode.Object when typedefof<Byte[]>.IsAssignableFrom(t) -> DataType MySqlDbType.VarBinary
-        | _ -> Unhandled
+        let t = unwrapType originType
+        let dataType =
+            match System.Type.GetTypeCode(t) with
+            | System.TypeCode.Boolean -> DataType MySqlDbType.Bit
+            | System.TypeCode.Byte -> DataType MySqlDbType.Byte
+            | System.TypeCode.Char -> DataType MySqlDbType.VarChar
+            | System.TypeCode.DateTime -> DataType MySqlDbType.DateTime
+            | System.TypeCode.Decimal -> DataType MySqlDbType.Decimal
+            | System.TypeCode.Double -> DataType MySqlDbType.Double
+            | System.TypeCode.Int16 -> DataType MySqlDbType.Int16
+            | System.TypeCode.Int32 -> DataType MySqlDbType.Int32
+            | System.TypeCode.Int64 -> DataType MySqlDbType.Int64
+            | System.TypeCode.SByte -> DataType MySqlDbType.Byte
+            | System.TypeCode.Single -> DataType MySqlDbType.Float
+            | System.TypeCode.String -> DataType MySqlDbType.VarChar
+            | System.TypeCode.UInt16 -> DataType MySqlDbType.Int16
+            | System.TypeCode.UInt32 -> DataType MySqlDbType.Int32
+            | System.TypeCode.UInt64 -> DataType MySqlDbType.Int64
+            | System.TypeCode.Empty -> Unhandled
+            | System.TypeCode.Object when typedefof<Guid>.IsAssignableFrom(t) -> DataType MySqlDbType.VarChar
+            | System.TypeCode.Object when typedefof<Uri>.IsAssignableFrom(t) -> DataType MySqlDbType.VarChar
+            | System.TypeCode.Object when typedefof<Char[]>.IsAssignableFrom(t) -> DataType MySqlDbType.VarChar
+            | System.TypeCode.Object when typedefof<Byte[]>.IsAssignableFrom(t) -> DataType MySqlDbType.VarBinary
+            | _ -> Unhandled
+        (dataType, originType)
 
     let private defaultGetTableName (t:System.Type) : string =
         t.Name
@@ -98,7 +110,14 @@ module QueryTranslator =
                         PropertySets = []
                     }
                 else
-                    failwith "non value property type not supported"
+                    let typeConverter = TypeDescriptor.GetConverter propertyType
+                    if typeConverter <> null then
+                        Lambda {
+                            Lambda = toLinq <@ fun o -> typeConverter.ConvertFrom o @>
+                            Parameters = [Value index]
+                        }
+                    else
+                        failwithf "The property type %s is not supported" propertyType.Name
 
             let createConstructorInfoFromProperties (fields : PropertyInfo list) =
                 let ctorArgs = fields |> Seq.mapi(fun i f ->
@@ -226,21 +245,22 @@ module QueryTranslator =
     /// <param name="getColumnName">Called to determine the column name for a Reflection.MemberInfo</param>
     /// <param name="expression">The Linq.Expression to translate</param>
     let translateToStatement
-        (getDBType : GetDBType<MySqlDbType> option)
+        (getStorageType : (TypeSource -> Type) option)
         (getTableName : GetTableName option)
         (getColumnName : GetColumnName option)
         (expression : Expression) =
 
-        let getDBType =
-            match getDBType with
-            | Some g -> fun morP ->
-                match g morP with
-                | Unhandled ->
-                    match defaultGetMySqlDBType morP with
-                    | Unhandled -> failwithf "Could not determine DataType for '%A' is not handled" morP
-                    | r -> r
-                | r -> r
-            | None -> defaultGetMySqlDBType
+        let getDBType ( typeSource: TypeSource) =
+            let typeSource =
+                match getStorageType with
+                    | Some fn ->
+                        match fn typeSource with
+                            | null -> typeSource
+                            | t -> TypeSource.Type t
+                    | None -> typeSource
+            match defaultGetMySqlDBType typeSource with
+            | (Unhandled, _) -> failwithf "Could not determine DataType for '%A' is not handled" typeSource
+            | (DataType dbType, t) -> (dbType, t)
 
         let getColumnName =
             match getColumnName with
@@ -263,12 +283,10 @@ module QueryTranslator =
             columnNameUnique := (!columnNameUnique + 1)
             !columnNameUnique
 
+
         let createParameter value =
-            let t =
-                match (getDBType (TypeSource.Value value)) with
-                | Unhandled -> failwithf "Unable to determine sql data type for type '%s'" (value.GetType().Name)
-                | DataType t -> t
-            createParameter (getNextParamIndex()) value t
+            let (dbType, dotnetType) = getDBType (TypeSource.Value value)
+            createParameter (getNextParamIndex()) value dbType dotnetType
 
         let tableAliasIndex = ref 1
 
@@ -337,8 +355,8 @@ module QueryTranslator =
             let map = fun e ->
                 mapd context e
 
-            let valueToQueryAndParam dbType value =
-                valueToQueryAndParam (getNextParamIndex()) dbType value
+            let valueToQueryAndParam (dbType : MySqlDbType) (dotnetType : Type) value =
+                valueToQueryAndParam (getNextParamIndex()) dbType dotnetType value
             let createNull dbType =
                 createNull (getNextParamIndex()) dbType
 
@@ -698,13 +716,15 @@ module QueryTranslator =
                     | None ->
                         let simpleInvoke m =
                             let v = invoke m
-                            Some (v |> valueToQueryAndParam (getDBType (TypeSource.Value v)))
+                            let (dbType, dotnetType) = getDBType (TypeSource.Value v)
+                            Some (v |> valueToQueryAndParam dbType dotnetType)
 
                         match m.Method.Name with
                         | "Contains" | "StartsWith" | "EndsWith" as typeName
                             when(m.Object <> null && m.Object.Type = typedefof<string>) ->
                             let value = getRequiredLocalValue (m.Arguments.Item(0))
-                            let valQ, valP, valC = valueToQueryAndParam (getDBType (TypeSource.Value value)) value
+                            let (dbType, dotnetType) = getDBType (TypeSource.Value value)
+                            let valQ, valP, valC = valueToQueryAndParam dbType dotnetType value
                             let search =
                                 match typeName with
                                 | "Contains" -> ["CONCAT('%', "] @ valQ @ [", '%')"]
@@ -738,7 +758,8 @@ module QueryTranslator =
                                     // Static method, assume String.Equals(obj.Prop, String[, StringComparison])
                                     (m.Arguments.Item(0), getRequiredLocalValue (m.Arguments.Item(1)), 2)
                             let colQ, colP, colC = map(expr)
-                            let valQ, valP, valC = valueToQueryAndParam (getDBType (TypeSource.Value value)) value
+                            let (dbType, dotnetType) = getDBType (TypeSource.Value value)
+                            let valQ, valP, valC = valueToQueryAndParam dbType dotnetType value
                             let comp =
                                 if (m.Arguments.Count > compIx) then
                                     getRequiredLocalValue (m.Arguments.Item(compIx)) :?> StringComparison
@@ -766,16 +787,17 @@ module QueryTranslator =
                             simpleInvoke m
                         | "get_None" when (isOption m.Method.ReturnType) ->
                             let t = m.Method.ReturnType.GetGenericArguments() |> Seq.head
-                            Some (createNull (getDBType (TypeSource.Type t)))
+                            let (dbType, _) = (getDBType (TypeSource.Type t))
+                            Some (createNull dbType)
                         | "Contains" ->
                             match m with
                             | CallIEnumerable(_m, enumerableObject, args) ->
                                 let firstArg = args |> Seq.head
-                                let dbType = getDBType (TypeSource.Type firstArg.Type)
+                                let (dbType, dotnetType) = getDBType (TypeSource.Type firstArg.Type)
                                 let queryParams =
                                     enumerableObject
                                     |> Seq.cast<Object>
-                                    |> Seq.map(fun v -> valueToQueryAndParam dbType v)
+                                    |> Seq.map(fun v -> valueToQueryAndParam dbType dotnetType v)
                                     |> Seq.toList
 
                                 let colQ, colP, colC = map(firstArg)
@@ -871,9 +893,11 @@ module QueryTranslator =
                         | None -> failwith "This should never get hit"
                     | None ->
                         if c.Value = null then
-                            Some (createNull (getDBType (TypeSource.Type c.Type)))
+                            let (dbType, dotnetType) = (getDBType (TypeSource.Type c.Type))
+                            Some (createNull dbType)
                         else
-                            Some (valueToQueryAndParam (getDBType (TypeSource.Value c.Value)) c.Value)
+                            let (dbType, dotnetType) = (getDBType (TypeSource.Value c.Value))
+                            Some (valueToQueryAndParam dbType dotnetType c.Value)
                 | MemberAccess m ->
                     if m.Expression <> null && m.Expression.NodeType = ExpressionType.Parameter then
                         // If the expression is a MemberAccess on a Parameter (i.e. a POCO property) generate column
@@ -886,7 +910,8 @@ module QueryTranslator =
                         // If the expression is a chain of MemberAccess and Call expressions on a constant, evaluate
                         // that in C#
                         | Some (value) ->
-                            let param = valueToQueryAndParam (getDBType (TypeSource.Value value)) value
+                            let (dbType, dotnetType) = (getDBType (TypeSource.Value value))
+                            let param = valueToQueryAndParam dbType dotnetType value
                             Some (param)
                         | None ->
                             if isNullableHasValue m.Member then

@@ -3,16 +3,16 @@ namespace Invio.QueryProvider.MySql
 open System
 open System.Collections
 open System.Collections.Generic
-open System.Data
+open System.Collections.Immutable
 open System.Linq.Expressions
 
 open MySql.Data.MySqlClient
 
-open System.Linq
 open System.Reflection
 open Invio.Extensions.Reflection
 open Invio.QueryProvider
 open Invio.QueryProvider.MySql.QueryTranslator
+open Invio.QueryProvider.MySql.QueryTranslatorUtilities
 
 type gfdi = delegate of Expression -> IEnumerable<obj>
 /// <summary>
@@ -22,13 +22,36 @@ type gfdi = delegate of Expression -> IEnumerable<obj>
 /// <param name="connection">
 ///   An open <see cref="MySqlConnection" /> instance.
 /// </param>
-type public MySqlQueryProvider ( connection : MySqlConnection ) =
+type public MySqlQueryProvider
+    ( connection : MySqlConnection,
+      databaseTypeMappings : IEnumerable<KeyValuePair<Type, Type>> ) =
     inherit BaseQueryProvider()
+
+    let databaseTypeMappings =
+        match databaseTypeMappings with
+            | null -> null
+            | :? IImmutableDictionary<Type, Type> as immutable -> immutable
+            | dict -> dict.ToImmutableDictionary() :> IImmutableDictionary<Type, Type>
+
+    let getStorageType =
+        if databaseTypeMappings = null then None
+        else Some (fun (ts : TypeSource) ->
+            let t =
+                match ts with
+                    | Method mi -> mi.ReturnType
+                    | Property pi -> pi.PropertyType
+                    | Value v when v <> null -> v.GetType()
+                    | Type t -> t
+                    | _ -> null
+            match databaseTypeMappings.TryGetValue t with
+                | (true, storageType) -> storageType
+                | (false, _) -> null)
+
 
     let createCommand con expression =
         let command, ctor =
             translateToCommand
-                None
+                getStorageType
                 None
                 None
                 con
@@ -60,6 +83,9 @@ type public MySqlQueryProvider ( connection : MySqlConnection ) =
             |> Seq.where (fun m -> m.Name = "PrepareEnumerable" && m.IsGenericMethod && m.GetGenericArguments().Length = 1)
             |> Seq.exactlyOne
 
+    new(connection: MySqlConnection) =
+        new MySqlQueryProvider(connection, null)
+
     override this.Execute expression =
         let cmd, ctorInfo = createCommand connection expression
         use reader = cmd.ExecuteReader()
@@ -71,7 +97,7 @@ type public MySqlQueryProvider ( connection : MySqlConnection ) =
         prepareEnumerable.Invoke(this, args) :?> IEnumerable
 
     member internal this.PrepareEnumerable<'T> (expression : Expression) : IEnumerable<'T> =
-        let statement = translateToStatement None None None expression
+        let statement = translateToStatement getStorageType None None expression
 
         SqlCommandEnumerable<'T>(connection, statement) :> IEnumerable<'T>
 

@@ -1,6 +1,7 @@
 ﻿module Invio.QueryProvider.MySql.QueryTranslatorUtilities
 
 open System
+open System.ComponentModel
 open System.Linq.Expressions
 open System.Reflection
 
@@ -177,16 +178,27 @@ let unionExactlyOneCaseOneField t =
         else
             fields |> Seq.exactlyOne
 
+let maybeConvert (value : obj) (dotnetType : Type) : obj =
+    if value <> null then
+        let t = value.GetType()
+        if not (dotnetType.IsAssignableFrom(t)) then
+            match TypeDescriptor.GetConverter(t) with
+                | converter when converter <> null && converter.CanConvertTo(dotnetType) ->
+                    converter.ConvertTo(value, dotnetType)
+                | _ -> failwithf "Unable to convert value of type %s to mapped type %s" (t.Name) (dotnetType.Name)
+        else value
+    else value
+
 /// <summary>
 /// Create a prepared parameter
 /// </summary>
 /// <param name="columnIndex"></param>
 /// <param name="value"></param>
 /// <param name="dbType"></param>
-let createParameter columnIndex value dbType =
+let createParameter columnIndex value dbType dotnetType =
     {
         PreparedParameter.Name = "@p" + columnIndex.ToString()
-        Value = value
+        Value = (maybeConvert value dotnetType)
         DbType = dbType
     }
 
@@ -212,13 +224,10 @@ let rec unwrapValue value =
 /// <param name="columnIndex"></param>
 /// <param name="dbType"></param>
 /// <param name="value"></param>
-let rec valueToQueryAndParam (columnIndex : int) (dbType : DBType<_>) (value : obj)=
+let rec valueToQueryAndParam (columnIndex : int) (dbType : _) (dotnetType : Type) (value : obj)=
     let value = unwrapValue value
-    match dbType with
-    | Unhandled -> failwithf "Unable to determine sql data type for type '%s'" (value.GetType().Name)
-    | DataType t ->
-        let p = (createParameter columnIndex value t)
-        [p.Name], [p], List.empty<ConstructionInfo>
+    let p = (createParameter columnIndex value dbType dotnetType)
+    [p.Name], [p], List.empty<ConstructionInfo>
 
 
 /// <summary>
@@ -226,12 +235,9 @@ let rec valueToQueryAndParam (columnIndex : int) (dbType : DBType<_>) (value : o
 /// </summary>
 /// <param name="columnIndex"></param>
 /// <param name="dbType"></param>
-let createNull (columnIndex : int) (dbType : DBType<_>) =
-    match dbType with
-    | Unhandled -> failwith "Shouldnt ever get to this point with this value"
-    | DataType dbType ->
-        let p = createParameter columnIndex System.DBNull.Value dbType
-        [p.Name], [p], List.empty<ConstructionInfo>
+let createNull (columnIndex : int) (dbType : _) =
+    let p = createParameter columnIndex DBNull.Value dbType typedefof<DBNull>
+    [p.Name], [p], List.empty<ConstructionInfo>
 
 /// <summary>
 /// Get all operations in a LINQ chain and the queryable they are operating on.

@@ -1,21 +1,32 @@
 ﻿using System;
 using System.Collections.Generic;
+using System.Collections.Immutable;
+using System.ComponentModel;
 using System.IO;
 using System.Linq;
 using System.Linq.Expressions;
 using System.Text;
 using Invio.Extensions;
-using Invio.Extensions.Reflection;
 using Invio.QueryProvider.Test;
+using Invio.QueryProvider.Test.Models;
 using Microsoft.Extensions.Configuration;
 using Microsoft.FSharp.Core;
 using MySql.Data.MySqlClient;
 
 namespace Invio.QueryProvider.MySql.Test {
     public sealed class MySqlTestFixture : IDisposable {
+        private static IImmutableDictionary<Type, MySqlDbType> customDbTypeMappings { get; } =
+            ImmutableDictionary<Type, MySqlDbType>.Empty
+                .Add(typeof(PhoneNumber), MySqlDbType.VarChar);
+
+        private static IImmutableDictionary<Type, Type> customTypeMappings { get; } =
+            ImmutableDictionary<Type, Type>.Empty
+                .Add(typeof(PhoneNumber), typeof(String));
+
+        private static MySqlConnectionSettings configuration { get; }
+
         private Guid testId { get; } = Guid.NewGuid();
         private String databaseName => $"Northwind_{this.testId}";
-        private static MySqlConnectionSettings configuration { get; }
 
         static MySqlTestFixture() {
             var basePath = Environment.GetEnvironmentVariable("BASE_DIRECTORY");
@@ -103,7 +114,17 @@ namespace Invio.QueryProvider.MySql.Test {
 
                 foreach (var model in models) {
                     foreach (var param in parameters) {
-                        param.Parameter.Value = param.Property.GetValue(model);
+                        if (customTypeMappings.TryGetValue(param.Property.PropertyType, out var destinationType)) {
+                            var typeConverter =
+                                TypeDescriptor.GetConverter(param.Property.PropertyType);
+                            param.Parameter.Value =
+                                typeConverter.ConvertTo(
+                                    param.Property.GetValue(model),
+                                    destinationType
+                                );
+                        } else {
+                            param.Parameter.Value = param.Property.GetValue(model);
+                        }
                     }
 
                     try {
@@ -130,13 +151,15 @@ namespace Invio.QueryProvider.MySql.Test {
         }
 
         private MySqlDbType GetDbType(Type propertyType) {
-            var result =
+            var (dataType, _) =
                 QueryTranslator.defaultGetMySqlDBType(
                     QueryTranslatorUtilities.TypeSource.NewType(propertyType)
                 );
 
-            if (result.IsDataType) {
-                return ((QueryTranslatorUtilities.DBType<MySqlDbType>.DataType)result).Item;
+            if (dataType.IsDataType) {
+                return ((QueryTranslatorUtilities.DBType<MySqlDbType>.DataType)dataType).Item;
+            } else if (customDbTypeMappings.TryGetValue(propertyType, out var dbType)) {
+                return dbType;
             } else {
                 throw new ArgumentException(
                     $"The specified Type is not supported: {propertyType.Name}",
@@ -164,7 +187,7 @@ namespace Invio.QueryProvider.MySql.Test {
         }
 
         public IQueryable<TModel> CreateQueryable<TModel>(MySqlConnection connection) {
-            var queryProvider = new MySqlQueryProvider(connection);
+            var queryProvider = new MySqlQueryProvider(connection, customTypeMappings);
             return new Query<TModel>(queryProvider, FSharpOption<Expression>.None);
         }
 
