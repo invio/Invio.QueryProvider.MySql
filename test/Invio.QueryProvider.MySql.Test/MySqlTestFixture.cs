@@ -17,11 +17,13 @@ namespace Invio.QueryProvider.MySql.Test {
     public sealed class MySqlTestFixture : IDisposable {
         private static IImmutableDictionary<Type, MySqlDbType> customDbTypeMappings { get; } =
             ImmutableDictionary<Type, MySqlDbType>.Empty
-                .Add(typeof(PhoneNumber), MySqlDbType.VarChar);
+                .Add(typeof(PhoneNumber), MySqlDbType.VarChar)
+                .Add(typeof(Hyperlink), MySqlDbType.VarChar);
 
         private static IImmutableDictionary<Type, Type> customTypeMappings { get; } =
             ImmutableDictionary<Type, Type>.Empty
-                .Add(typeof(PhoneNumber), typeof(String));
+                .Add(typeof(PhoneNumber), typeof(String))
+                .Add(typeof(Hyperlink), typeof(String));
 
         private static MySqlConnectionSettings configuration { get; }
 
@@ -151,20 +153,25 @@ namespace Invio.QueryProvider.MySql.Test {
         }
 
         private MySqlDbType GetDbType(Type propertyType) {
-            var (dataType, _) =
-                QueryTranslator.defaultGetMySqlDBType(
-                    QueryTranslatorUtilities.TypeSource.NewType(propertyType)
-                );
+            while (true) {
+                var (dataType, _) = QueryTranslator.defaultGetMySqlDBType(QueryTranslatorUtilities.TypeSource.NewType(propertyType));
 
-            if (dataType.IsDataType) {
-                return ((QueryTranslatorUtilities.DBType<MySqlDbType>.DataType)dataType).Item;
-            } else if (customDbTypeMappings.TryGetValue(propertyType, out var dbType)) {
-                return dbType;
-            } else {
-                throw new ArgumentException(
-                    $"The specified Type is not supported: {propertyType.Name}",
-                    nameof(propertyType)
-                );
+                if (dataType.IsDataType) {
+                    return ((QueryTranslatorUtilities.DBType<MySqlDbType>.DataType)dataType).Item;
+                } else if (customDbTypeMappings.TryGetValue(propertyType, out var dbType)) {
+                    return dbType;
+                } else {
+                    switch (Nullable.GetUnderlyingType(propertyType)) {
+                        case Type innerType:
+                            propertyType = innerType;
+                            break;
+                        default:
+                            throw new ArgumentException(
+                                $"The specified Type is not supported: {propertyType.Name}",
+                                nameof(propertyType)
+                            );
+                    }
+                }
             }
         }
 

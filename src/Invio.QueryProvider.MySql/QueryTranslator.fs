@@ -21,8 +21,6 @@ open Invio.QueryProvider.MySql.QueryTranslatorUtilities
 open Invio.QueryProvider.MySql.DataReader
 
 module QueryTranslator =
-    open System.ComponentModel
-
     let toLinq (expr : Expr<'a -> 'b>) =
       let linq = LeafExpressionConverter.QuotationToExpression expr
       let call = linq :?> MethodCallExpression
@@ -67,6 +65,16 @@ module QueryTranslator =
     let private defaultGetColumnName (t:System.Reflection.MemberInfo) : string =
         t.Name
 
+    let private makeConverterLambda (destinationType : Type) (converter : TypeConverter) =
+        toLinq (
+            <@ fun (o : obj) ->
+                match o with
+                    | null -> null
+                    | :? DBNull -> null
+                    | v when destinationType.IsAssignableFrom(v.GetType()) -> v
+                    | v when converter.CanConvertFrom(v.GetType()) -> converter.ConvertFrom(o)
+                    | _ -> o @>)
+
     //terible duplication of code between this and createTypeSelect. needs to be refactored.
     let private createTypeConstructionInfo selectIndex (t : System.Type) : TypeConstructionInfo =
         if isValueType t then
@@ -100,7 +108,14 @@ module QueryTranslator =
                         PropertySets = []
                     }
                 else if isValueType propertyType then
-                    Value index
+                    let typeConverter = TypeDescriptor.GetConverter propertyType
+                    if typeConverter <> null then
+                        Lambda {
+                            Lambda = (makeConverterLambda propertyType typeConverter) :> LambdaExpression
+                            Parameters = [Value index]
+                        }
+                    else
+                        Value index
                 else if propertyType.IsArray && propertyType.GetElementType() = typedefof<byte> then
                     Value index
                 else if propertyType = typedefof<Uri> then
@@ -113,7 +128,7 @@ module QueryTranslator =
                     let typeConverter = TypeDescriptor.GetConverter propertyType
                     if typeConverter <> null then
                         Lambda {
-                            Lambda = toLinq <@ fun o -> typeConverter.ConvertFrom o @>
+                            Lambda = (makeConverterLambda propertyType typeConverter) :> LambdaExpression
                             Parameters = [Value index]
                         }
                     else
@@ -250,6 +265,14 @@ module QueryTranslator =
         (getColumnName : GetColumnName option)
         (expression : Expression) =
 
+        let getMappedType (t : Type) =
+            match getStorageType with
+                | Some fn ->
+                    match fn (TypeSource.Type t) with
+                        | null -> t
+                        | mappedType -> mappedType
+                | None -> t
+
         let getDBType ( typeSource: TypeSource) =
             let typeSource =
                 match getStorageType with
@@ -357,8 +380,6 @@ module QueryTranslator =
 
             let valueToQueryAndParam (dbType : MySqlDbType) (dotnetType : Type) value =
                 valueToQueryAndParam (getNextParamIndex()) dbType dotnetType value
-            let createNull dbType =
-                createNull (getNextParamIndex()) dbType
 
             let bin (e : BinaryExpression) (operator : string) =
                 let leftSql, leftParams, leftCtor = map(e.Left)
@@ -366,11 +387,16 @@ module QueryTranslator =
                 let parameters = leftParams @ rightParams
                 let ctors = leftCtor @ rightCtor
                 let sql =
-                    if e.Left.Type = typedefof<string> then
+                    if (getMappedType e.Left.Type) = typedefof<string> then
                         leftSql @ [" COLLATE utf8_bin "; operator; " "] @ rightSql
                     else
                         leftSql @ [" "; operator; " "] @ rightSql
-                Some (["("] @ sql @ [")"], parameters, ctors)
+                (["("] @ sql @ [")"], parameters, ctors)
+
+            let isNullExpr (e : Expression) =
+                match (getLocalValue e) with
+                    | Some v when v = null -> true
+                    | _ -> false
 
             let result : option<string list * PreparedParameter<_> list * ConstructionInfo list>=
                 match e with
@@ -788,7 +814,7 @@ module QueryTranslator =
                         | "get_None" when (isOption m.Method.ReturnType) ->
                             let t = m.Method.ReturnType.GetGenericArguments() |> Seq.head
                             let (dbType, _) = (getDBType (TypeSource.Type t))
-                            Some (createNull dbType)
+                            Some (["NULL"], [], [])
                         | "Contains" ->
                             match m with
                             | CallIEnumerable(_m, enumerableObject, args) ->
@@ -848,26 +874,26 @@ module QueryTranslator =
                         match isBinaryOperation e with
                             | true -> "&"
                             | false -> "AND"
-                    bin e sqlOperator
-                | AndAlso e -> bin e "AND"
+                    Some (bin e sqlOperator)
+                | AndAlso e -> Some (bin e "AND")
                 | Or e ->
                     let sqlOperator =
                         match isBinaryOperation e with
                             | true -> "|"
                             | false -> "OR"
-                    bin e sqlOperator
-                | OrElse e -> bin e "OR"
-                | ExclusiveOr e -> bin e "^"
-                | Equal e -> bin e "<=>"
+                    Some (bin e sqlOperator)
+                | OrElse e -> Some (bin e "OR")
+                | ExclusiveOr e -> Some (bin e "^")
+                | Equal e when (isNullExpr e.Left || isNullExpr e.Right) -> Some (bin e "IS")
+                | Equal e -> Some (bin e "<=>")
+                | NotEqual e when (isNullExpr e.Left || isNullExpr e.Right) -> Some (bin e "IS NOT")
                 | NotEqual e ->
-                    let result = (bin e "<=>")
-                    match result with
-                    | Some (sql, parameters, ctor) -> Some ([" NOT "] @ sql, parameters, ctor)
-                    | None -> None
-                | LessThan e -> bin e "<"
-                | LessThanOrEqual e -> bin e "<="
-                | GreaterThan e -> bin e ">"
-                | GreaterThanOrEqual e -> bin e ">="
+                    let (sql, parameters, ctor) = bin e "<=>"
+                    Some ([" NOT "] @ sql, parameters, ctor)
+                | LessThan e -> Some (bin e "<")
+                | LessThanOrEqual e -> Some (bin e "<=")
+                | GreaterThan e -> Some (bin e ">")
+                | GreaterThanOrEqual e -> Some (bin e ">=")
                 | Constant c ->
                     let queryable =
                         match c.Value with
@@ -894,7 +920,7 @@ module QueryTranslator =
                     | None ->
                         if c.Value = null then
                             let (dbType, dotnetType) = (getDBType (TypeSource.Type c.Type))
-                            Some (createNull dbType)
+                            Some (["NULL"], [], [])
                         else
                             let (dbType, dotnetType) = (getDBType (TypeSource.Value c.Value))
                             Some (valueToQueryAndParam dbType dotnetType c.Value)
@@ -909,6 +935,7 @@ module QueryTranslator =
                         match getLocalValue m with
                         // If the expression is a chain of MemberAccess and Call expressions on a constant, evaluate
                         // that in C#
+                        | Some (value) when value = null -> Some (["NULL"], [], [])
                         | Some (value) ->
                             let (dbType, dotnetType) = (getDBType (TypeSource.Value value))
                             let param = valueToQueryAndParam dbType dotnetType value

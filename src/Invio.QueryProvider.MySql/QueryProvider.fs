@@ -43,7 +43,7 @@ type public MySqlQueryProvider
                     | Value v when v <> null -> v.GetType()
                     | Type t -> t
                     | _ -> null
-            match databaseTypeMappings.TryGetValue t with
+            match databaseTypeMappings.TryGetValue (TypeHelper.unwrapType t) with
                 | (true, storageType) -> storageType
                 | (false, _) -> null)
 

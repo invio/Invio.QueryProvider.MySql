@@ -229,16 +229,6 @@ let rec valueToQueryAndParam (columnIndex : int) (dbType : _) (dotnetType : Type
     let p = (createParameter columnIndex value dbType dotnetType)
     [p.Name], [p], List.empty<ConstructionInfo>
 
-
-/// <summary>
-/// Create a DbNull parameter for a type.
-/// </summary>
-/// <param name="columnIndex"></param>
-/// <param name="dbType"></param>
-let createNull (columnIndex : int) (dbType : _) =
-    let p = createParameter columnIndex DBNull.Value dbType typedefof<DBNull>
-    [p.Name], [p], List.empty<ConstructionInfo>
-
 /// <summary>
 /// Get all operations in a LINQ chain and the queryable they are operating on.
 /// </summary>

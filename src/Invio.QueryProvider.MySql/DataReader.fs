@@ -109,12 +109,18 @@ and constructEnum reader enumCtor =
     Enum.ToObject(enumCtor.Type, (reader.GetValue enumCtor.Index))
 
 and constructType reader typeCtor =
-    let getSingleIndex() =
-        match typeCtor.ConstructorArgs |> Seq.exactlyOne with
-        | Type _ -> failwith "Shouldn't be Type"
-        | Lambda _ -> failwith "Shouldn't be Lambda"
+    let rec getSingleIndex arg =
+        match arg with
+        | Type t when Seq.length t.ConstructorArgs = 1 ->
+            t.ConstructorArgs |> Seq.exactlyOne |> getSingleIndex
+        | Type _ -> failwith "Unable to get the index for a type constructor with multiple arguments"
+        | Lambda l when Seq.length l.Parameters = 1 ->
+            l.Parameters |> Seq.exactlyOne |> getSingleIndex
+        | Lambda _ -> failwith "Unable to get the index for a lambda initializer with multiple arguments"
         | Enum e -> e.Index
         | DateTime i | Bool i | Value i -> i
+    let getSingleIndex() =
+        typeCtor.ConstructorArgs |> Seq.exactlyOne |> getSingleIndex
 
     let getValue i =
         let typeName = reader.GetDataTypeName i
@@ -163,7 +169,7 @@ and constructType reader typeCtor =
             let value =
                 match typeCtor.ConstructorArgs |> Seq.exactlyOne with
                     | Type t -> failwith "Shouldn't be Type"
-                    | Lambda l -> failwith "Shouldn't be Lambda"
+                    | Lambda l -> invokeLambda reader l
                     | Enum e -> constructEnum reader e
                     | DateTime i -> getValue i |> readDateTime
                     | Bool i -> getValue i |> readBool
