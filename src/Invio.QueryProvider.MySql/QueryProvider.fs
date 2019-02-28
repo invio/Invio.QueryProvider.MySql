@@ -8,6 +8,7 @@ open System.Linq.Expressions
 open System.Reflection
 
 open MySql.Data.MySqlClient
+open StackExchange.Profiling
 
 open Invio.Extensions.Reflection
 open Invio.QueryProvider
@@ -91,6 +92,7 @@ type public MySqlQueryProvider
         DataReader.read reader ctorInfo
 
     override this.PrepareEnumerable expression =
+        use step = MiniProfiler.Current.Step("Prepare Enumerable")
         let prepareEnumerable = prepareEnumerableMethod.MakeGenericMethod(unwrapQueryableType <| expression.Type)
         let args : obj array = [| expression |]
         prepareEnumerable.Invoke(this, args) :?> IEnumerable
@@ -121,7 +123,10 @@ and internal SqlCommandEnumerator<'T>
     ) =
 
     let command = lazy createCommand connection statement
-    let reader = lazy command.Force().ExecuteReader()
+    let execute() =
+        use step = MiniProfiler.Current.Step("Execute Reader")
+        command.Force().ExecuteReader()
+    let reader = lazy execute()
     let ctor =
         match statement.ResultConstructionInfo with
         | Some ctor -> ctor

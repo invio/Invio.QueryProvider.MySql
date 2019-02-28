@@ -4,6 +4,7 @@ open System
 open System.Linq
 open System.Reflection
 open Microsoft.FSharp.Reflection
+open StackExchange.Profiling
 
 open Invio.Extensions.Reflection
 open Invio.QueryProvider.TypeHelper
@@ -85,7 +86,7 @@ let rec readBool (value : obj) =
     | x -> failwithf "unexpected type %s" (x.GetType().FullName)
 
 let rec constructResult (reader : System.Data.IDataReader) (ctor : ConstructionInfo) : obj =
-
+    use step = MiniProfiler.Current.Step("Construct Result " + ctor.Type.Name)
     match ctor.TypeOrLambda with
     | TypeOrLambdaConstructionInfo.Lambda lambdaCtor ->
         invokeLambda reader lambdaCtor
@@ -251,13 +252,18 @@ let read (reader : System.Data.IDataReader) constructionInfo : obj =
 
     let returnType = constructionInfo.ReturnType
     let t = constructionInfo.Type
+    // Ugh, buffering results here which sucks
     let getAll() =
+        use step = MiniProfiler.Current.Step("Get All Results")
         let listT = typedefof<System.Collections.Generic.List<_>>
         let conListT = listT.MakeGenericType([| t |])
         let conListTInfo = conListT.GetTypeInfo()
         let addM = conListTInfo.GetMethods() |> Seq.find(fun m -> m.Name = "Add")
         let inst = System.Activator.CreateInstance(conListT)
-        while reader.Read() do
+        let read () =
+            use step = MiniProfiler.Current.Step("DataReader.Read")
+            reader.Read()
+        while read() do
             let res = constructResult()
             addM.Invoke(inst, [|res|]) |> ignore
         inst

@@ -12,6 +12,8 @@ open Microsoft.FSharp.Quotations
 open Microsoft.FSharp.Reflection
 open MySql.Data.MySqlClient;
 
+open StackExchange.Profiling
+
 open Invio.Extensions.Reflection
 open Invio.QueryProvider
 open Invio.QueryProvider.ExpressionHelper
@@ -21,6 +23,7 @@ open Invio.QueryProvider.MySql.QueryTranslatorUtilities
 open Invio.QueryProvider.MySql.DataReader
 
 module QueryTranslator =
+
     let toLinq (expr : Expr<'a -> 'b>) =
       let linq = LeafExpressionConverter.QuotationToExpression expr
       let call = linq :?> MethodCallExpression
@@ -82,6 +85,7 @@ module QueryTranslator =
 
     //terible duplication of code between this and createTypeSelect. needs to be refactored.
     let private createTypeConstructionInfo selectIndex (t : System.Type) : TypeConstructionInfo =
+        use step = MiniProfiler.Current.Step("Create Type Construction Info")
         if isValueType t then
             {
                 Type = t
@@ -128,7 +132,7 @@ module QueryTranslator =
                         let expr = (makeConverterLambda propertyType typeConverter) :> LambdaExpression
                         Lambda {
                             Lambda = expr
-                            Delegate = expr.Compile()
+                            Delegate = MiniProfiler.Current.Inline(new Func<Delegate>(expr.Compile), ("Compile Lambda " + propertyType.Name))
                             Parameters = [Value index]
                         }
                     else
@@ -266,6 +270,7 @@ module QueryTranslator =
         (getColumnName : GetColumnName option)
         (expression : Expression) =
 
+        use step = MiniProfiler.Current.Step("Translate To Statement")
         let getMappedType (t : Type) =
             match getStorageType with
                 | Some fn ->
@@ -458,7 +463,7 @@ module QueryTranslator =
 
                         let wheres = List.fold concatWheres wheres wheresLists
 
-                        let sorts, ml= getMethods ["OrderBy"; "OrderByDescending"; "ThenBy"; "ThenByDescending"] ml
+                        let sorts, ml = getMethods ["OrderBy"; "OrderByDescending"; "ThenBy"; "ThenByDescending"] ml
                         let sorts, maxOrMin =
                             let m =
                                 match max,min with
@@ -494,6 +499,7 @@ module QueryTranslator =
                             mapd {aliasedContext with TopQuery = false} e
 
                         let manualSqlQuery, (manualSqlParams : PreparedParameter<MySqlDbType> list), manualSqlOverride =
+                            use step = MiniProfiler.Current.Step("Generate Manual SQL")
                             match generateManualSqlQuery queryable tableAlias aliasedContext with
                             | Some (q, p) -> q, p, true
                             | None -> [], [], false
@@ -508,6 +514,7 @@ module QueryTranslator =
                                 Many
 
                         let selectClause, selectParameters, selectCtor =
+                            use step = MiniProfiler.Current.Step("Generate Select Clause")
                             let selectColumns, selectParameters, selectCtor =
                                 match count with
                                 | Some _->
@@ -566,7 +573,7 @@ module QueryTranslator =
 
                                                         let lambdaCtor = {
                                                             Lambda = l
-                                                            Delegate = l.Compile()
+                                                            Delegate = MiniProfiler.Current.Inline(new Func<Delegate>(l.Compile), ("Compile Lambda " + l.ReturnType.Name))
                                                             Parameters = [Type typeCtor]
                                                         }
 
@@ -620,6 +627,7 @@ module QueryTranslator =
                             frontSelect @ selectColumns, selectParameters, selectCtor
 
                         let from =
+                            use step = MiniProfiler.Current.Step("Generate From Clause")
                             if not manualSqlOverride || needsSelect.Value then
                                 ["FROM `"; getTableName(queryable.ElementType); "` AS "; ] @ tableAlias
                             else
@@ -628,6 +636,7 @@ module QueryTranslator =
                         let mainStatement = selectClause @ from
 
                         let whereClause, whereParameters, whereCtor =
+                            use step = MiniProfiler.Current.Step("Generate Where Clause")
                             let fromWhere =
                                 match wheres with
                                 | [] -> None
@@ -681,6 +690,7 @@ module QueryTranslator =
                             | Some (q, qp, qc) -> [" WHERE ("] @ q @ [")"], qp, qc
 
                         let orderByClause, orderByParameters, orderByCtor =
+                            use step = MiniProfiler.Current.Step("Generate Order Clause")
                             match sorts with
                             | [] -> [], [], []
                             | _ ->
@@ -702,6 +712,7 @@ module QueryTranslator =
                                 [" ORDER BY "] @ colSorts, parameters, ctor
 
                         let limitStatement =
+                            use step = MiniProfiler.Current.Step("Generate Limit Clause")
                             let skipCount, count =
                                 if single.IsSome || singleOrDefault.IsSome then
                                     None, Some 2
@@ -981,6 +992,7 @@ module QueryTranslator =
     /// <param name="preparedStatement"></param>
     let createCommand (connection : MySql.Data.MySqlClient.MySqlConnection) (preparedStatement : PreparedStatement<MySqlDbType>) =
 
+        use step = MiniProfiler.Current.Step("Create Command")
         let cmd = connection.CreateCommand()
         cmd.CommandText <- preparedStatement.Text
         for param in preparedStatement.Parameters do
