@@ -5,16 +5,15 @@ open System.Collections
 open System.Collections.Generic
 open System.Collections.Immutable
 open System.Linq.Expressions
+open System.Reflection
 
 open MySql.Data.MySqlClient
 
-open System.Reflection
 open Invio.Extensions.Reflection
 open Invio.QueryProvider
 open Invio.QueryProvider.MySql.QueryTranslator
 open Invio.QueryProvider.MySql.QueryTranslatorUtilities
 
-type gfdi = delegate of Expression -> IEnumerable<obj>
 /// <summary>
 ///   An <see creft="System.Linq.IQueryProvider" /> implementation for
 ///   <see cref="MySqlConnection" />.

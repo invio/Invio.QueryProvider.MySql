@@ -27,6 +27,30 @@ module QueryTranslator =
       let lambda = call.Arguments.[0] :?> LambdaExpression
       Expression.Lambda<Func<'a, 'b>>(lambda.Body, lambda.Parameters)
 
+    let getDataType t =
+        match System.Type.GetTypeCode(t) with
+        | System.TypeCode.Boolean -> DataType MySqlDbType.Bit
+        | System.TypeCode.Byte -> DataType MySqlDbType.Byte
+        | System.TypeCode.Char -> DataType MySqlDbType.VarChar
+        | System.TypeCode.DateTime -> DataType MySqlDbType.DateTime
+        | System.TypeCode.Decimal -> DataType MySqlDbType.Decimal
+        | System.TypeCode.Double -> DataType MySqlDbType.Double
+        | System.TypeCode.Int16 -> DataType MySqlDbType.Int16
+        | System.TypeCode.Int32 -> DataType MySqlDbType.Int32
+        | System.TypeCode.Int64 -> DataType MySqlDbType.Int64
+        | System.TypeCode.SByte -> DataType MySqlDbType.Byte
+        | System.TypeCode.Single -> DataType MySqlDbType.Float
+        | System.TypeCode.String -> DataType MySqlDbType.VarChar
+        | System.TypeCode.UInt16 -> DataType MySqlDbType.Int16
+        | System.TypeCode.UInt32 -> DataType MySqlDbType.Int32
+        | System.TypeCode.UInt64 -> DataType MySqlDbType.Int64
+        | System.TypeCode.Empty -> Unhandled
+        | System.TypeCode.Object when typedefof<Guid>.IsAssignableFrom(t) -> DataType MySqlDbType.VarChar
+        | System.TypeCode.Object when typedefof<Uri>.IsAssignableFrom(t) -> DataType MySqlDbType.VarChar
+        | System.TypeCode.Object when typedefof<Char[]>.IsAssignableFrom(t) -> DataType MySqlDbType.VarChar
+        | System.TypeCode.Object when typedefof<Byte[]>.IsAssignableFrom(t) -> DataType MySqlDbType.VarBinary
+        | _ -> Unhandled
+
     let defaultGetMySqlDBType (typeSource : TypeSource) : (MySqlDbType DBType*Type) =
         let originType =
             match typeSource with
@@ -34,31 +58,12 @@ module QueryTranslator =
             | Property p -> p.PropertyType
             | TypeSource.Value v -> v.GetType()
             | TypeSource.Type t -> t
-        let t = unwrapType originType
-        let dataType =
-            match System.Type.GetTypeCode(t) with
-            | System.TypeCode.Boolean -> DataType MySqlDbType.Bit
-            | System.TypeCode.Byte -> DataType MySqlDbType.Byte
-            | System.TypeCode.Char -> DataType MySqlDbType.VarChar
-            | System.TypeCode.DateTime -> DataType MySqlDbType.DateTime
-            | System.TypeCode.Decimal -> DataType MySqlDbType.Decimal
-            | System.TypeCode.Double -> DataType MySqlDbType.Double
-            | System.TypeCode.Int16 -> DataType MySqlDbType.Int16
-            | System.TypeCode.Int32 -> DataType MySqlDbType.Int32
-            | System.TypeCode.Int64 -> DataType MySqlDbType.Int64
-            | System.TypeCode.SByte -> DataType MySqlDbType.Byte
-            | System.TypeCode.Single -> DataType MySqlDbType.Float
-            | System.TypeCode.String -> DataType MySqlDbType.VarChar
-            | System.TypeCode.UInt16 -> DataType MySqlDbType.Int16
-            | System.TypeCode.UInt32 -> DataType MySqlDbType.Int32
-            | System.TypeCode.UInt64 -> DataType MySqlDbType.Int64
-            | System.TypeCode.Empty -> Unhandled
-            | System.TypeCode.Object when typedefof<Guid>.IsAssignableFrom(t) -> DataType MySqlDbType.VarChar
-            | System.TypeCode.Object when typedefof<Uri>.IsAssignableFrom(t) -> DataType MySqlDbType.VarChar
-            | System.TypeCode.Object when typedefof<Char[]>.IsAssignableFrom(t) -> DataType MySqlDbType.VarChar
-            | System.TypeCode.Object when typedefof<Byte[]>.IsAssignableFrom(t) -> DataType MySqlDbType.VarBinary
-            | _ -> Unhandled
-        (dataType, originType)
+        (originType |> unwrapType |> getDataType, originType)
+
+    let isWellKnownType t =
+        match getDataType t with
+            | Unhandled -> false
+            | _ -> true
 
     let private defaultGetTableName (t:System.Type) : string =
         t.Name
@@ -107,15 +112,8 @@ module QueryTranslator =
                         ConstructorArgs = [Value index]
                         PropertySets = []
                     }
-                else if isValueType propertyType then
-                    let typeConverter = TypeDescriptor.GetConverter propertyType
-                    if typeConverter <> null then
-                        Lambda {
-                            Lambda = (makeConverterLambda propertyType typeConverter) :> LambdaExpression
-                            Parameters = [Value index]
-                        }
-                    else
-                        Value index
+                else if isValueType propertyType &&  isWellKnownType propertyType then
+                    Value index
                 else if propertyType.IsArray && propertyType.GetElementType() = typedefof<byte> then
                     Value index
                 else if propertyType = typedefof<Uri> then
@@ -127,8 +125,10 @@ module QueryTranslator =
                 else
                     let typeConverter = TypeDescriptor.GetConverter propertyType
                     if typeConverter <> null then
+                        let expr = (makeConverterLambda propertyType typeConverter) :> LambdaExpression
                         Lambda {
-                            Lambda = (makeConverterLambda propertyType typeConverter) :> LambdaExpression
+                            Lambda = expr
+                            Delegate = expr.Compile()
                             Parameters = [Value index]
                         }
                     else
@@ -142,7 +142,8 @@ module QueryTranslator =
 
                 {
                     Type = t
-                    ConstructorArgs = ctorArgs
+                    // Don't recomute the constructor args on every row
+                    ConstructorArgs = ctorArgs |> Seq.toList
                     PropertySets = []
                 }
             if FSharpType.IsRecord t then
@@ -565,6 +566,7 @@ module QueryTranslator =
 
                                                         let lambdaCtor = {
                                                             Lambda = l
+                                                            Delegate = l.Compile()
                                                             Parameters = [Type typeCtor]
                                                         }
 

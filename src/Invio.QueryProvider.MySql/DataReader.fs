@@ -1,7 +1,6 @@
 ﻿module Invio.QueryProvider.MySql.DataReader
 
 open System
-open System.Collections
 open System.Linq
 open System.Reflection
 open Microsoft.FSharp.Reflection
@@ -28,12 +27,13 @@ and TypeOrValueOrLambdaConstructionInfo =
 
 and TypeConstructionInfo = {
     Type : System.Type
-    ConstructorArgs : TypeOrValueOrLambdaConstructionInfo seq
+    ConstructorArgs : TypeOrValueOrLambdaConstructionInfo list
     PropertySets : (TypeOrValueOrLambdaConstructionInfo * System.Reflection.PropertyInfo) seq
 }
 
 and LambdaConstructionInfo = {
     Lambda : System.Linq.Expressions.LambdaExpression
+    Delegate : Delegate
     Parameters : TypeOrValueOrLambdaConstructionInfo seq
 }
 
@@ -103,7 +103,7 @@ and invokeLambda reader lambdaCtor =
             | TypeOrValueOrLambdaConstructionInfo.DateTime i -> readDateTime ((reader.GetValue i))
             | TypeOrValueOrLambdaConstructionInfo.Bool i -> readBool ((reader.GetValue i))
             | TypeOrValueOrLambdaConstructionInfo.Enum enumCtor -> constructEnum reader enumCtor)
-    lambdaCtor.Lambda.Compile().DynamicInvoke(paramValues |> Seq.toArray)
+    lambdaCtor.Delegate.DynamicInvoke(paramValues |> Seq.toArray)
 
 and constructEnum reader enumCtor =
     Enum.ToObject(enumCtor.Type, (reader.GetValue enumCtor.Index))
